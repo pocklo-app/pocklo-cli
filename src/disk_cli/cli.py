@@ -227,11 +227,13 @@ def format_timestamp(timestamp: Any) -> str:
 
 
 def format_size(size: Any) -> str:
+    if size is None:
+        return "-"
     try:
         value = float(size)
     except (TypeError, ValueError):
         return "-"
-    if value <= 0:
+    if value < 0:
         return "-"
     units = ["B", "KB", "MB", "GB", "TB"]
     index = 0
@@ -252,6 +254,20 @@ def status_text(status: int) -> Text:
         STATUS_LABELS.get(status, str(status)),
         style=STATUS_STYLES.get(status, "white"),
     )
+
+
+def resource_name_text(resource: dict[str, Any]) -> Text:
+    text = Text()
+    text.append(format_resource_ref(resource["res_str_id"]), style="bold yellow")
+    text.append(" ")
+    text.append(str(resource["rname"]), style="white")
+    return text
+
+
+def display_size(resource: dict[str, Any]) -> str:
+    if resource.get("rtype") != RTYPE_FILE:
+        return "-"
+    return format_size(resource.get("rsize"))
 
 
 def progress_columns() -> list[Any]:
@@ -455,17 +471,15 @@ def print_resource_listing(resource: dict[str, Any]) -> None:
     table.add_column("STATUS", no_wrap=True)
     table.add_column("SIZE", justify="right", no_wrap=True)
     table.add_column("CREATED", no_wrap=True)
-    table.add_column("NAME", ratio=1, overflow="ellipsis", no_wrap=True)
-    table.add_column("REF", no_wrap=True, style="bold yellow")
+    table.add_column("RESOURCE", ratio=1, overflow="ellipsis", no_wrap=True)
 
     for child in child_list:
         table.add_row(
             type_text(child["rtype"]),
             status_text(child["status"]),
-            Text(format_size(child.get("rsize")), style="white"),
+            Text(display_size(child), style="white"),
             Text(format_timestamp(child.get("create_time")), style="white"),
-            Text(str(child["rname"]), style="white"),
-            Text(format_resource_ref(child["res_str_id"]), style="bold yellow"),
+            resource_name_text(child),
         )
 
     console.print(table)
