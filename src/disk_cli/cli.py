@@ -42,7 +42,7 @@ class CommandContext:
 
     def require_login(self) -> None:
         if not self.settings.token:
-            raise CLIUsageError("Please run `disk login` first.")
+            raise CLIUsageError("Please run `htx login` first.")
 
     def sync_user(self) -> dict[str, Any]:
         self.require_login()
@@ -64,7 +64,7 @@ class CommandContext:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="disk",
+        prog="htx",
         description="Command-line client for the Disk backend API.",
     )
     parser.add_argument(

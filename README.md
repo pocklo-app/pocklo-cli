@@ -19,55 +19,55 @@ pip install -e .
 Print the SSO authorization URL:
 
 ```bash
-disk login --print-url
+htx login --print-url
 ```
 
 Interactive login:
 
 ```bash
-disk login
+htx login
 ```
 
 You can also paste the full callback URL directly:
 
 ```bash
-disk login --code 'https://d.6-79.cn/oauth/qtb/callback?code=...'
+htx login --code 'https://d.6-79.cn/oauth/qtb/callback?code=...'
 ```
 
 Show the authenticated user:
 
 ```bash
-disk whoami
+htx whoami
 ```
 
 List the root directory:
 
 ```bash
-disk ls
+htx ls
 ```
 
 List a nested remote directory by path:
 
 ```bash
-disk ls /Photos/2024
+htx ls /Photos/2024
 ```
 
 List a remote resource directly by resource ID:
 
 ```bash
-disk ls id:Ab12Cd
+htx ls id:Ab12Cd
 ```
 
 Upload a local file into a remote directory:
 
 ```bash
-disk upload ./report.pdf /Docs
+htx upload ./report.pdf /Docs
 ```
 
 Upload a local directory recursively. The local directory name is created or reused under the target remote directory:
 
 ```bash
-disk upload ./albums /Photos
+htx upload ./albums /Photos
 ```
 
 ## State File

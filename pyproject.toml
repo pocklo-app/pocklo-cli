@@ -13,7 +13,7 @@ dependencies = [
 ]
 
 [project.scripts]
-disk = "disk_cli.cli:main"
+htx = "disk_cli.cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
