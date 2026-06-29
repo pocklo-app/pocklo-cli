@@ -370,7 +370,7 @@ def ensure_remote_folder(ctx: CommandContext, parent_id: str, folder_name: str) 
     if existing:
         return existing["res_str_id"]
     created = ctx.client.create_folder(parent_id, folder_name)
-    print(f"created remote folder: {folder_name} ({created['res_str_id']})")
+    print_success(f"created remote folder {folder_name} ({format_resource_ref(created['res_str_id'])})")
     return created["res_str_id"]
 
 
@@ -445,7 +445,7 @@ def print_resource_listing(resource: dict[str, Any]) -> None:
     summary.add_row("Status", status_text(info["status"]))
     summary.add_row(
         "Owner",
-        Text(f"{info['owner']['nickname']} ({info['owner']['user_id']})", style="white"),
+        Text(str(info["owner"]["nickname"]), style="white"),
     )
     summary.add_row("Time", Text(format_timestamp(info.get("create_time")), style="white"))
 
@@ -490,7 +490,6 @@ def print_user_summary(user: dict[str, Any]) -> None:
     summary.add_column(style="bold cyan", justify="right")
     summary.add_column()
     summary.add_row("Nickname", Text(str(user.get("nickname", "-")), style="bold white"))
-    summary.add_row("User ID", Text(str(user.get("user_id", "-")), style="white"))
     summary.add_row("Avatar", Text(str(user.get("avatar", "-")), style="white"))
     root_res = user.get("root_res", "-")
     summary.add_row(

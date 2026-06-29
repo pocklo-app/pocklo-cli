@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import time
 from typing import Any, Callable
 from urllib.parse import urljoin
 
@@ -32,6 +33,8 @@ class UploadToken:
 
 
 ProgressCallback = Callable[[int, int | None], None]
+MAX_RETRIES = 5
+RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 
 
 class UploadMonitor:
@@ -98,6 +101,37 @@ class DiskClient:
 
         return payload.get("body")
 
+    @staticmethod
+    def _retry_delay(attempt: int) -> float:
+        return min(0.5 * (2 ** (attempt - 1)), 4.0)
+
+    @staticmethod
+    def _should_retry_api_error(error: DiskAPIError) -> bool:
+        return error.status_code in RETRYABLE_STATUS_CODES
+
+    def _request_once(
+        self,
+        method: str,
+        url: str,
+        *,
+        params: dict[str, Any] | None = None,
+        json: dict[str, Any] | None = None,
+        data: dict[str, Any] | None = None,
+        files: dict[str, Any] | None = None,
+        include_auth: bool = True,
+    ) -> Any:
+        response = self.session.request(
+            method=method.upper(),
+            url=url,
+            params=params,
+            json=json,
+            data=data,
+            files=files,
+            headers=self._headers(include_auth=include_auth),
+            timeout=self.timeout,
+        )
+        return self._unwrap_response(response)
+
     def request(
         self,
         method: str,
@@ -111,17 +145,33 @@ class DiskClient:
         files: dict[str, Any] | None = None,
     ) -> Any:
         url = absolute_url or urljoin(f"{self.settings.backend_url}/", path.lstrip("/"))
-        response = self.session.request(
-            method=method.upper(),
-            url=url,
-            params=params,
-            json=json,
-            data=data,
-            files=files,
-            headers=self._headers(include_auth=include_auth),
-            timeout=self.timeout,
-        )
-        return self._unwrap_response(response)
+        last_error: Exception | None = None
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                return self._request_once(
+                    method,
+                    url,
+                    params=params,
+                    json=json,
+                    data=data,
+                    files=files,
+                    include_auth=include_auth,
+                )
+            except DiskAPIError as exc:
+                last_error = exc
+                if attempt >= MAX_RETRIES or not self._should_retry_api_error(exc):
+                    raise
+            except requests.RequestException as exc:
+                last_error = exc
+                if attempt >= MAX_RETRIES:
+                    raise DiskAPIError(
+                        f"Request failed after {MAX_RETRIES} attempts: {exc}"
+                    ) from exc
+            time.sleep(self._retry_delay(attempt))
+
+        if isinstance(last_error, DiskAPIError):
+            raise last_error
+        raise DiskAPIError(f"Request failed after {MAX_RETRIES} attempts.")
 
     def exchange_code(self, code: str) -> dict[str, Any]:
         body = self.request(
@@ -212,42 +262,63 @@ class DiskClient:
         progress_callback: ProgressCallback | None = None,
     ) -> str:
         url = urljoin(f"{self.settings.backend_url}/", f"/api/res/{res_str_id}/dl".lstrip("/"))
-        response = self.session.get(
-            url,
-            params={"token": self.settings.token or ""},
-            headers={},
-            timeout=self.timeout,
-            stream=True,
-            allow_redirects=True,
-        )
-        content_type = response.headers.get("content-type", "")
-        if "application/json" in content_type:
-            self._unwrap_response(response)
-            raise DiskAPIError("Download endpoint returned JSON instead of file content.")
-        try:
-            response.raise_for_status()
-        except requests.HTTPError as exc:
-            raise DiskAPIError(
-                f"Download failed with HTTP {response.status_code}.",
-                status_code=response.status_code,
-            ) from exc
+        last_error: Exception | None = None
+        for attempt in range(1, MAX_RETRIES + 1):
+            response: requests.Response | None = None
+            try:
+                response = self.session.get(
+                    url,
+                    params={"token": self.settings.token or ""},
+                    headers={},
+                    timeout=self.timeout,
+                    stream=True,
+                    allow_redirects=True,
+                )
+                content_type = response.headers.get("content-type", "")
+                if "application/json" in content_type:
+                    self._unwrap_response(response)
+                    raise DiskAPIError("Download endpoint returned JSON instead of file content.")
+                try:
+                    response.raise_for_status()
+                except requests.HTTPError as exc:
+                    raise DiskAPIError(
+                        f"Download failed with HTTP {response.status_code}.",
+                        status_code=response.status_code,
+                    ) from exc
 
-        total_header = response.headers.get("content-length")
-        total = int(total_header) if total_header and total_header.isdigit() else None
-        if progress_callback:
-            progress_callback(0, total)
+                total_header = response.headers.get("content-length")
+                total = int(total_header) if total_header and total_header.isdigit() else None
+                if progress_callback:
+                    progress_callback(0, total)
 
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        transferred = 0
-        with destination.open("wb") as handle:
-            for chunk in response.iter_content(chunk_size=1024 * 128):
-                if chunk:
-                    handle.write(chunk)
-                    transferred += len(chunk)
-                    if progress_callback:
-                        progress_callback(transferred, total)
-        response.close()
-        return response.url
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                transferred = 0
+                with destination.open("wb") as handle:
+                    for chunk in response.iter_content(chunk_size=1024 * 128):
+                        if chunk:
+                            handle.write(chunk)
+                            transferred += len(chunk)
+                            if progress_callback:
+                                progress_callback(transferred, total)
+                return response.url
+            except DiskAPIError as exc:
+                last_error = exc
+                if attempt >= MAX_RETRIES or not self._should_retry_api_error(exc):
+                    raise
+            except requests.RequestException as exc:
+                last_error = exc
+                if attempt >= MAX_RETRIES:
+                    raise DiskAPIError(
+                        f"Download failed after {MAX_RETRIES} attempts: {exc}"
+                    ) from exc
+            finally:
+                if response is not None:
+                    response.close()
+            time.sleep(self._retry_delay(attempt))
+
+        if isinstance(last_error, DiskAPIError):
+            raise last_error
+        raise DiskAPIError(f"Download failed after {MAX_RETRIES} attempts.")
 
     def get_upload_token(self, parent_id: str, filename: str) -> UploadToken:
         body = self.request(
@@ -266,15 +337,32 @@ class DiskClient:
         *,
         progress_callback: ProgressCallback | None = None,
     ) -> dict[str, Any]:
-        with UploadMonitor(local_path, progress_callback) as handle:
-            body = self.request(
-                "POST",
-                "",
-                absolute_url=self.settings.qiniu_upload_url,
-                include_auth=False,
-                data={"key": upload.key, "token": upload.upload_token},
-                files={"file": (local_path.name, handle)},
-            )
-        if not isinstance(body, dict):
-            raise DiskAPIError("Upload endpoint returned an unexpected payload.")
-        return body
+        last_error: Exception | None = None
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                with UploadMonitor(local_path, progress_callback) as handle:
+                    body = self._request_once(
+                        "POST",
+                        self.settings.qiniu_upload_url,
+                        include_auth=False,
+                        data={"key": upload.key, "token": upload.upload_token},
+                        files={"file": (local_path.name, handle)},
+                    )
+                if not isinstance(body, dict):
+                    raise DiskAPIError("Upload endpoint returned an unexpected payload.")
+                return body
+            except DiskAPIError as exc:
+                last_error = exc
+                if attempt >= MAX_RETRIES or not self._should_retry_api_error(exc):
+                    raise
+            except requests.RequestException as exc:
+                last_error = exc
+                if attempt >= MAX_RETRIES:
+                    raise DiskAPIError(
+                        f"Upload failed after {MAX_RETRIES} attempts: {exc}"
+                    ) from exc
+            time.sleep(self._retry_delay(attempt))
+
+        if isinstance(last_error, DiskAPIError):
+            raise last_error
+        raise DiskAPIError(f"Upload failed after {MAX_RETRIES} attempts.")
