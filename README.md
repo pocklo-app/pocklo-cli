@@ -76,6 +76,43 @@ Upload a local directory recursively. The local directory name is created or reu
 htx upload ./albums /Photos
 ```
 
+Create a directory under the remote root:
+
+```bash
+htx mkdir Projects
+```
+
+Create a directory under a specific remote folder:
+
+```bash
+htx mkdir 2026 /Photos
+htx mkdir Archive @Ab12Cd
+```
+
+Rename a remote resource:
+
+```bash
+htx rename /Photos/old-name.jpg new-name.jpg
+```
+
+Move a remote resource into another remote directory:
+
+```bash
+htx mv /Photos/new-name.jpg /Archive
+```
+
+Delete a remote file:
+
+```bash
+htx rm /Archive/new-name.jpg
+```
+
+Delete a non-empty remote directory recursively:
+
+```bash
+htx rm --recursive /Archive
+```
+
 ## State File
 
 The CLI stores the backend JWT token and the last fetched user payload in:

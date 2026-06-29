@@ -130,6 +130,46 @@ class DiskClient:
             raise DiskAPIError("Create-folder endpoint returned an unexpected payload.")
         return body
 
+    def create_link(self, parent_id: str, link_name: str, link: str) -> dict[str, Any]:
+        body = self.request(
+            "POST",
+            f"/api/res/{parent_id}/link",
+            json={"link_name": link_name, "link": link},
+        )
+        if not isinstance(body, dict):
+            raise DiskAPIError("Create-link endpoint returned an unexpected payload.")
+        return body
+
+    def update_resource(
+        self,
+        res_str_id: str,
+        *,
+        rname: str | None = None,
+        status: int | None = None,
+        description: str | None = None,
+        visit_key: str | None = None,
+        right_bubble: bool | None = None,
+        parent_str_id: str | None = None,
+    ) -> dict[str, Any]:
+        body = self.request(
+            "PUT",
+            f"/api/res/{res_str_id}",
+            json={
+                "rname": rname,
+                "status": status,
+                "description": description,
+                "visit_key": visit_key,
+                "right_bubble": right_bubble,
+                "parent_str_id": parent_str_id,
+            },
+        )
+        if not isinstance(body, dict):
+            raise DiskAPIError("Update-resource endpoint returned an unexpected payload.")
+        return body
+
+    def delete_resource(self, res_str_id: str) -> None:
+        self.request("DELETE", f"/api/res/{res_str_id}")
+
     def get_upload_token(self, parent_id: str, filename: str) -> UploadToken:
         body = self.request(
             "GET",

@@ -113,6 +113,32 @@ def build_parser() -> argparse.ArgumentParser:
         help="Target remote directory path, @<res_str_id>, or id:<res_str_id>.",
     )
 
+    mkdir = subparsers.add_parser("mkdir", help="Create a remote directory.")
+    mkdir.add_argument("name", help="Directory name to create.")
+    mkdir.add_argument(
+        "parent",
+        nargs="?",
+        default="/",
+        help="Parent remote directory path, @<res_str_id>, or id:<res_str_id>.",
+    )
+
+    rm = subparsers.add_parser("rm", help="Delete a remote file or directory.")
+    rm.add_argument("remote_path", help="Remote path, @<res_str_id>, or id:<res_str_id>.")
+    rm.add_argument(
+        "-r",
+        "--recursive",
+        action="store_true",
+        help="Recursively delete a directory and its contents.",
+    )
+
+    mv = subparsers.add_parser("mv", help="Move a remote resource into a different directory.")
+    mv.add_argument("source", help="Remote path, @<res_str_id>, or id:<res_str_id>.")
+    mv.add_argument("target_dir", help="Target directory path, @<res_str_id>, or id:<res_str_id>.")
+
+    rename = subparsers.add_parser("rename", help="Rename a remote resource.")
+    rename.add_argument("remote_path", help="Remote path, @<res_str_id>, or id:<res_str_id>.")
+    rename.add_argument("new_name", help="New name for the resource.")
+
     return parser
 
 
@@ -244,6 +270,14 @@ def find_child_folder(ctx: CommandContext, parent_id: str, folder_name: str) -> 
     return None
 
 
+def find_child_resource(ctx: CommandContext, parent_id: str, resource_name: str) -> dict[str, Any] | None:
+    selector = ctx.client.get_selector(parent_id)
+    for child in selector.get("child_list", []):
+        if child.get("rname") == resource_name:
+            return child
+    return None
+
+
 def ensure_remote_folder(ctx: CommandContext, parent_id: str, folder_name: str) -> str:
     existing = find_child_folder(ctx, parent_id, folder_name)
     if existing:
@@ -277,6 +311,16 @@ def upload_directory_to_remote(ctx: CommandContext, local_dir: Path, parent_id: 
 
         for filename in filenames:
             upload_file_to_remote(ctx, current_root_path / filename, remote_parent_id)
+
+
+def delete_resource_recursive(ctx: CommandContext, resource: dict[str, Any]) -> None:
+    info = resource["info"]
+    if info["rtype"] == RTYPE_FOLDER:
+        for child in sort_children(resource.get("child_list", [])):
+            child_resource = ctx.client.get_resource(child["res_str_id"])
+            delete_resource_recursive(ctx, child_resource)
+    ctx.client.delete_resource(info["res_str_id"])
+    print(f"deleted: {info['rname']} ({format_resource_ref(info['res_str_id'])})")
 
 
 def print_resource_listing(resource: dict[str, Any]) -> None:
@@ -385,6 +429,67 @@ def handle_upload(ctx: CommandContext, args: argparse.Namespace) -> int:
     return 0
 
 
+def handle_mkdir(ctx: CommandContext, args: argparse.Namespace) -> int:
+    target_resource = resolve_remote_reference(ctx, args.parent)
+    ensure_folder_resource(target_resource, label=args.parent)
+    target_id = target_resource["info"]["res_str_id"]
+
+    existing = find_child_resource(ctx, target_id, args.name)
+    if existing is not None:
+        raise CLIUsageError(f"`{args.name}` already exists under {args.parent}.")
+
+    created = ctx.client.create_folder(target_id, args.name)
+    print(f"created: {created['rname']} ({format_resource_ref(created['res_str_id'])})")
+    return 0
+
+
+def handle_rm(ctx: CommandContext, args: argparse.Namespace) -> int:
+    resource = resolve_remote_reference(ctx, args.remote_path)
+    info = resource["info"]
+    if info["rtype"] == RTYPE_FOLDER and resource.get("child_list") and not args.recursive:
+        raise CLIUsageError("Directory is not empty. Re-run with `htx rm --recursive`.")
+
+    if info["rtype"] == RTYPE_FOLDER and args.recursive:
+        delete_resource_recursive(ctx, resource)
+        return 0
+
+    ctx.client.delete_resource(info["res_str_id"])
+    print(f"deleted: {info['rname']} ({format_resource_ref(info['res_str_id'])})")
+    return 0
+
+
+def handle_mv(ctx: CommandContext, args: argparse.Namespace) -> int:
+    source = resolve_remote_reference(ctx, args.source)
+    target_dir = resolve_remote_reference(ctx, args.target_dir)
+    ensure_folder_resource(target_dir, label=args.target_dir)
+
+    source_info = source["info"]
+    target_info = target_dir["info"]
+    if source_info["res_str_id"] == target_info["res_str_id"]:
+        raise CLIUsageError("Source and target directory cannot be the same resource.")
+
+    ctx.client.update_resource(
+        source_info["res_str_id"],
+        parent_str_id=target_info["res_str_id"],
+    )
+    print(
+        f"moved: {source_info['rname']} ({format_resource_ref(source_info['res_str_id'])})"
+        f" -> {target_info['rname']} ({format_resource_ref(target_info['res_str_id'])})"
+    )
+    return 0
+
+
+def handle_rename(ctx: CommandContext, args: argparse.Namespace) -> int:
+    resource = resolve_remote_reference(ctx, args.remote_path)
+    info = resource["info"]
+    ctx.client.update_resource(info["res_str_id"], rname=args.new_name)
+    print(
+        f"renamed: {info['rname']} ({format_resource_ref(info['res_str_id'])})"
+        f" -> {args.new_name}"
+    )
+    return 0
+
+
 def dispatch(args: argparse.Namespace) -> int:
     settings = DiskSettings.load(args.config)
     client = DiskClient(settings)
@@ -396,6 +501,10 @@ def dispatch(args: argparse.Namespace) -> int:
         "logout": handle_logout,
         "ls": handle_ls,
         "upload": handle_upload,
+        "mkdir": handle_mkdir,
+        "rm": handle_rm,
+        "mv": handle_mv,
+        "rename": handle_rename,
     }
     return handlers[args.command](ctx, args)
 
