@@ -11,6 +11,22 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from rich import box
+from rich.console import Console
+from rich.panel import Panel
+from rich.progress import (
+    BarColumn,
+    DownloadColumn,
+    Progress,
+    SpinnerColumn,
+    TaskProgressColumn,
+    TextColumn,
+    TimeRemainingColumn,
+    TransferSpeedColumn,
+)
+from rich.table import Table
+from rich.text import Text
+
 from . import __version__
 from .api import DiskAPIError, DiskClient
 from .config import DEFAULT_STATE_PATH, DiskSettings
@@ -30,6 +46,21 @@ TYPE_LABELS = {
     RTYPE_FOLDER: "dir",
     RTYPE_LINK: "link",
 }
+
+TYPE_STYLES = {
+    RTYPE_FILE: "white",
+    RTYPE_FOLDER: "bold cyan",
+    RTYPE_LINK: "bold magenta",
+}
+
+STATUS_STYLES = {
+    0: "bold green",
+    1: "bold yellow",
+    2: "bold red",
+}
+
+console = Console()
+error_console = Console(stderr=True)
 
 
 class CLIUsageError(RuntimeError):
@@ -212,18 +243,39 @@ def format_size(size: Any) -> str:
     return f"{value:.1f} {units[index]}"
 
 
-def render_table(headers: list[str], rows: list[list[str]]) -> str:
-    widths = [len(header) for header in headers]
-    for row in rows:
-        for index, cell in enumerate(row):
-            widths[index] = max(widths[index], len(cell))
+def type_text(rtype: int) -> Text:
+    return Text(TYPE_LABELS.get(rtype, "unknown"), style=TYPE_STYLES.get(rtype, "white"))
 
-    def render_row(values: list[str]) -> str:
-        return "  ".join(value.ljust(widths[index]) for index, value in enumerate(values))
 
-    lines = [render_row(headers), render_row(["-" * width for width in widths])]
-    lines.extend(render_row(row) for row in rows)
-    return "\n".join(lines)
+def status_text(status: int) -> Text:
+    return Text(
+        STATUS_LABELS.get(status, str(status)),
+        style=STATUS_STYLES.get(status, "white"),
+    )
+
+
+def progress_columns() -> list[Any]:
+    return [
+        SpinnerColumn(style="bold cyan"),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        DownloadColumn(binary_units=True),
+        TransferSpeedColumn(),
+        TimeRemainingColumn(),
+    ]
+
+
+def print_success(message: str) -> None:
+    console.print(f"[bold green]OK[/bold green] {message}")
+
+
+def print_note(message: str) -> None:
+    console.print(f"[bold cyan]INFO[/bold cyan] {message}")
+
+
+def print_warning(message: str) -> None:
+    error_console.print(f"[bold yellow]WARN[/bold yellow] {message}")
 
 
 def sort_children(children: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -307,9 +359,20 @@ def ensure_remote_folder(ctx: CommandContext, parent_id: str, folder_name: str) 
 
 
 def upload_file_to_remote(ctx: CommandContext, local_path: Path, parent_id: str) -> dict[str, Any]:
-    upload_token = ctx.client.get_upload_token(parent_id, local_path.name)
-    uploaded = ctx.client.upload_file(upload_token, local_path)
-    print(f"uploaded: {local_path} -> {uploaded['rname']} ({uploaded['res_str_id']})")
+    with console.status(f"[bold cyan]Preparing upload for[/bold cyan] {local_path.name}", spinner="dots"):
+        upload_token = ctx.client.get_upload_token(parent_id, local_path.name)
+
+    total = local_path.stat().st_size
+    with Progress(*progress_columns(), console=console, transient=True) as progress:
+        task_id = progress.add_task(f"Uploading {local_path.name}", total=total)
+
+        def on_progress(transferred: int, callback_total: int | None) -> None:
+            progress.update(task_id, completed=transferred, total=callback_total or total)
+
+        uploaded = ctx.client.upload_file(upload_token, local_path, progress_callback=on_progress)
+    print_success(
+        f"uploaded {local_path.name} -> {uploaded['rname']} ({format_resource_ref(uploaded['res_str_id'])})"
+    )
     return uploaded
 
 
@@ -350,77 +413,119 @@ def delete_resource_recursive(ctx: CommandContext, resource: dict[str, Any]) -> 
             child_resource = ctx.client.get_resource(child["res_str_id"])
             delete_resource_recursive(ctx, child_resource)
     ctx.client.delete_resource(info["res_str_id"])
-    print(f"deleted: {info['rname']} ({format_resource_ref(info['res_str_id'])})")
+    print_success(f"deleted {info['rname']} ({format_resource_ref(info['res_str_id'])})")
 
 
 def print_resource_listing(resource: dict[str, Any]) -> None:
     info = resource["info"]
     child_list = sort_children(resource.get("child_list", []))
-    print(f"Name    {info['rname']}")
-    print(f"Ref     {format_resource_ref(info['res_str_id'])}")
-    print(f"Type    {TYPE_LABELS.get(info['rtype'], 'unknown')}")
-    print(f"Status  {STATUS_LABELS.get(info['status'], info['status'])}")
-    print(f"Owner   {info['owner']['nickname']} ({info['owner']['user_id']})")
-    print(f"Time    {format_timestamp(info.get('create_time'))}")
+
+    summary = Table.grid(padding=(0, 2))
+    summary.add_column(style="bold cyan", justify="right")
+    summary.add_column()
+    summary.add_row("Name", Text(str(info["rname"]), style="bold white"))
+    summary.add_row("Ref", Text(format_resource_ref(info["res_str_id"]), style="bold yellow"))
+    summary.add_row("Type", type_text(info["rtype"]))
+    summary.add_row("Status", status_text(info["status"]))
+    summary.add_row(
+        "Owner",
+        Text(f"{info['owner']['nickname']} ({info['owner']['user_id']})", style="white"),
+    )
+    summary.add_row("Time", Text(format_timestamp(info.get("create_time")), style="white"))
 
     if info["rtype"] != RTYPE_FOLDER:
+        console.print(Panel(summary, border_style="bright_black", box=box.ROUNDED))
         return
 
-    print(f"Items   {len(child_list)}")
+    summary.add_row("Items", Text(str(len(child_list)), style="white"))
+    console.print(Panel(summary, border_style="bright_black", box=box.ROUNDED))
+
     if not child_list:
-        print("\n(empty)")
+        console.print("[dim](empty)[/dim]")
         return
 
-    rows = [
-        [
-            TYPE_LABELS.get(child["rtype"], "unknown"),
-            STATUS_LABELS.get(child["status"], str(child["status"])),
-            format_size(child.get("rsize")),
-            format_timestamp(child.get("create_time")),
-            child["rname"],
-            format_resource_ref(child["res_str_id"]),
-        ]
-        for child in child_list
-    ]
-    print("")
-    print(render_table(["TYPE", "STATUS", "SIZE", "CREATED", "NAME", "REF"], rows))
+    table = Table(
+        box=box.SIMPLE_HEAVY,
+        expand=True,
+        show_edge=False,
+        header_style="bold cyan",
+        pad_edge=False,
+    )
+    table.add_column("TYPE", no_wrap=True)
+    table.add_column("STATUS", no_wrap=True)
+    table.add_column("SIZE", justify="right", no_wrap=True)
+    table.add_column("CREATED", no_wrap=True)
+    table.add_column("NAME", ratio=1, overflow="ellipsis", no_wrap=True)
+    table.add_column("REF", no_wrap=True, style="bold yellow")
+
+    for child in child_list:
+        table.add_row(
+            type_text(child["rtype"]),
+            status_text(child["status"]),
+            Text(format_size(child.get("rsize")), style="white"),
+            Text(format_timestamp(child.get("create_time")), style="white"),
+            Text(str(child["rname"]), style="white"),
+            Text(format_resource_ref(child["res_str_id"]), style="bold yellow"),
+        )
+
+    console.print(table)
 
 
 def print_user_summary(user: dict[str, Any]) -> None:
-    print(f"Nickname  {user.get('nickname', '-')}")
-    print(f"User ID   {user.get('user_id', '-')}")
-    print(f"Avatar    {user.get('avatar', '-')}")
+    summary = Table.grid(padding=(0, 2))
+    summary.add_column(style="bold cyan", justify="right")
+    summary.add_column()
+    summary.add_row("Nickname", Text(str(user.get("nickname", "-")), style="bold white"))
+    summary.add_row("User ID", Text(str(user.get("user_id", "-")), style="white"))
+    summary.add_row("Avatar", Text(str(user.get("avatar", "-")), style="white"))
     root_res = user.get("root_res", "-")
-    print(f"Root Ref  {format_resource_ref(root_res) if root_res != '-' else root_res}")
+    summary.add_row(
+        "Root Ref",
+        Text(format_resource_ref(root_res) if root_res != "-" else root_res, style="bold yellow"),
+    )
+    console.print(Panel(summary, border_style="bright_black", box=box.ROUNDED))
 
 
 def handle_login(ctx: CommandContext, args: argparse.Namespace) -> int:
     auth_url = ctx.settings.oauth_authorize_url()
     if args.print_url:
-        print(auth_url)
+        console.print(auth_url)
         return 0
 
     if not args.code:
-        print("Open the SSO URL below, authorize the app, then paste the callback URL or code here:\n")
-        print(auth_url)
-        print("")
+        console.print(
+            Panel(
+                Text(
+                    "Open the SSO URL below, authorize the app, then paste the callback URL or code back here.\n\n"
+                    f"{auth_url}",
+                    style="white",
+                ),
+                title="SSO Login",
+                border_style="cyan",
+                box=box.ROUNDED,
+            )
+        )
         if not args.no_open_browser:
             webbrowser.open(auth_url)
         args.code = input("callback URL or code: ").strip()
 
     code = extract_code(args.code)
-    oauth_body = ctx.client.exchange_code(code)
-    ctx.settings.user = oauth_body.get("user") or ctx.client.get_current_user()
+    with console.status("[bold cyan]Exchanging authorization code[/bold cyan]", spinner="dots"):
+        oauth_body = ctx.client.exchange_code(code)
+        ctx.settings.user = oauth_body.get("user") or ctx.client.get_current_user()
     ctx.settings.save()
     user = ctx.settings.user or {}
-    print(f"logged in as {user.get('nickname', 'unknown user')} (root: {user.get('root_res', 'n/a')})")
+    print_success(
+        f"logged in as {user.get('nickname', 'unknown user')} (root: {format_resource_ref(user.get('root_res', 'n/a'))})"
+    )
     return 0
 
 
 def handle_whoami(ctx: CommandContext, _: argparse.Namespace) -> int:
-    user = ctx.sync_user()
+    with console.status("[bold cyan]Fetching user profile[/bold cyan]", spinner="dots"):
+        user = ctx.sync_user()
     if _.json:
-        print(json.dumps(user, ensure_ascii=False, indent=2))
+        console.print_json(json.dumps(user, ensure_ascii=False, indent=2))
         return 0
     print_user_summary(user)
     return 0
@@ -429,14 +534,15 @@ def handle_whoami(ctx: CommandContext, _: argparse.Namespace) -> int:
 def handle_logout(ctx: CommandContext, _: argparse.Namespace) -> int:
     ctx.settings.clear_auth()
     ctx.settings.save()
-    print("stored credentials cleared")
+    print_success("stored credentials cleared")
     return 0
 
 
 def handle_ls(ctx: CommandContext, args: argparse.Namespace) -> int:
-    resource = resolve_remote_reference(ctx, args.remote_path)
+    with console.status("[bold cyan]Loading resource listing[/bold cyan]", spinner="dots"):
+        resource = resolve_remote_reference(ctx, args.remote_path)
     if args.json:
-        print(json.dumps(resource, ensure_ascii=False, indent=2))
+        console.print_json(json.dumps(resource, ensure_ascii=False, indent=2))
         return 0
     print_resource_listing(resource)
     return 0
@@ -447,7 +553,8 @@ def handle_upload(ctx: CommandContext, args: argparse.Namespace) -> int:
     if not local_path.exists():
         raise CLIUsageError(f"Local path does not exist: {local_path}")
 
-    target_resource = resolve_remote_reference(ctx, args.remote_path)
+    with console.status("[bold cyan]Resolving target directory[/bold cyan]", spinner="dots"):
+        target_resource = resolve_remote_reference(ctx, args.remote_path)
     ensure_folder_resource(target_resource, label=args.remote_path)
     target_id = target_resource["info"]["res_str_id"]
 
@@ -460,7 +567,8 @@ def handle_upload(ctx: CommandContext, args: argparse.Namespace) -> int:
 
 
 def handle_mkdir(ctx: CommandContext, args: argparse.Namespace) -> int:
-    target_resource = resolve_remote_reference(ctx, args.parent)
+    with console.status("[bold cyan]Resolving parent directory[/bold cyan]", spinner="dots"):
+        target_resource = resolve_remote_reference(ctx, args.parent)
     ensure_folder_resource(target_resource, label=args.parent)
     target_id = target_resource["info"]["res_str_id"]
 
@@ -468,13 +576,15 @@ def handle_mkdir(ctx: CommandContext, args: argparse.Namespace) -> int:
     if existing is not None:
         raise CLIUsageError(f"`{args.name}` already exists under {args.parent}.")
 
-    created = ctx.client.create_folder(target_id, args.name)
-    print(f"created: {created['rname']} ({format_resource_ref(created['res_str_id'])})")
+    with console.status(f"[bold cyan]Creating directory[/bold cyan] {args.name}", spinner="dots"):
+        created = ctx.client.create_folder(target_id, args.name)
+    print_success(f"created {created['rname']} ({format_resource_ref(created['res_str_id'])})")
     return 0
 
 
 def handle_rm(ctx: CommandContext, args: argparse.Namespace) -> int:
-    resource = resolve_remote_reference(ctx, args.remote_path)
+    with console.status("[bold cyan]Resolving resource[/bold cyan]", spinner="dots"):
+        resource = resolve_remote_reference(ctx, args.remote_path)
     info = resource["info"]
     if info["rtype"] == RTYPE_FOLDER and resource.get("child_list") and not args.recursive:
         raise CLIUsageError("Directory is not empty. Re-run with `htx rm --recursive`.")
@@ -484,13 +594,14 @@ def handle_rm(ctx: CommandContext, args: argparse.Namespace) -> int:
         return 0
 
     ctx.client.delete_resource(info["res_str_id"])
-    print(f"deleted: {info['rname']} ({format_resource_ref(info['res_str_id'])})")
+    print_success(f"deleted {info['rname']} ({format_resource_ref(info['res_str_id'])})")
     return 0
 
 
 def handle_mv(ctx: CommandContext, args: argparse.Namespace) -> int:
-    source = resolve_remote_reference(ctx, args.source)
-    target_dir = resolve_remote_reference(ctx, args.target_dir)
+    with console.status("[bold cyan]Resolving source and target[/bold cyan]", spinner="dots"):
+        source = resolve_remote_reference(ctx, args.source)
+        target_dir = resolve_remote_reference(ctx, args.target_dir)
     ensure_folder_resource(target_dir, label=args.target_dir)
 
     source_info = source["info"]
@@ -498,42 +609,57 @@ def handle_mv(ctx: CommandContext, args: argparse.Namespace) -> int:
     if source_info["res_str_id"] == target_info["res_str_id"]:
         raise CLIUsageError("Source and target directory cannot be the same resource.")
 
-    ctx.client.update_resource(
-        source_info["res_str_id"],
-        parent_str_id=target_info["res_str_id"],
-    )
-    print(
-        f"moved: {source_info['rname']} ({format_resource_ref(source_info['res_str_id'])})"
+    with console.status("[bold cyan]Moving resource[/bold cyan]", spinner="dots"):
+        ctx.client.update_resource(
+            source_info["res_str_id"],
+            parent_str_id=target_info["res_str_id"],
+        )
+    print_success(
+        f"moved {source_info['rname']} ({format_resource_ref(source_info['res_str_id'])})"
         f" -> {target_info['rname']} ({format_resource_ref(target_info['res_str_id'])})"
     )
     return 0
 
 
 def handle_rename(ctx: CommandContext, args: argparse.Namespace) -> int:
-    resource = resolve_remote_reference(ctx, args.remote_path)
+    with console.status("[bold cyan]Resolving resource[/bold cyan]", spinner="dots"):
+        resource = resolve_remote_reference(ctx, args.remote_path)
     info = resource["info"]
-    ctx.client.update_resource(info["res_str_id"], rname=args.new_name)
-    print(
-        f"renamed: {info['rname']} ({format_resource_ref(info['res_str_id'])})"
+    with console.status("[bold cyan]Renaming resource[/bold cyan]", spinner="dots"):
+        ctx.client.update_resource(info["res_str_id"], rname=args.new_name)
+    print_success(
+        f"renamed {info['rname']} ({format_resource_ref(info['res_str_id'])})"
         f" -> {args.new_name}"
     )
     return 0
 
 
 def handle_download(ctx: CommandContext, args: argparse.Namespace) -> int:
-    resource = resolve_remote_reference(ctx, args.remote_path)
+    with console.status("[bold cyan]Resolving remote file[/bold cyan]", spinner="dots"):
+        resource = resolve_remote_reference(ctx, args.remote_path)
     destination = resolve_download_destination(resource, args.local_path)
-    final_url = ctx.client.download_resource(resource["info"]["res_str_id"], destination)
-    print(
-        f"downloaded: {resource['info']['rname']} ({format_resource_ref(resource['info']['res_str_id'])})"
+    with Progress(*progress_columns(), console=console, transient=True) as progress:
+        task_id = progress.add_task(f"Downloading {resource['info']['rname']}", total=None)
+
+        def on_progress(transferred: int, total: int | None) -> None:
+            progress.update(task_id, completed=transferred, total=total)
+
+        final_url = ctx.client.download_resource(
+            resource["info"]["res_str_id"],
+            destination,
+            progress_callback=on_progress,
+        )
+    print_success(
+        f"downloaded {resource['info']['rname']} ({format_resource_ref(resource['info']['res_str_id'])})"
         f" -> {destination}"
     )
-    print(f"source: {final_url}")
+    print_note(f"source: {final_url}")
     return 0
 
 
 def handle_link(ctx: CommandContext, args: argparse.Namespace) -> int:
-    target_resource = resolve_remote_reference(ctx, args.parent)
+    with console.status("[bold cyan]Resolving parent directory[/bold cyan]", spinner="dots"):
+        target_resource = resolve_remote_reference(ctx, args.parent)
     ensure_folder_resource(target_resource, label=args.parent)
     target_id = target_resource["info"]["res_str_id"]
 
@@ -541,9 +667,10 @@ def handle_link(ctx: CommandContext, args: argparse.Namespace) -> int:
     if existing is not None:
         raise CLIUsageError(f"`{args.name}` already exists under {args.parent}.")
 
-    created = ctx.client.create_link(target_id, args.name, args.url)
-    print(
-        f"created link: {created['rname']} ({format_resource_ref(created['res_str_id'])})"
+    with console.status(f"[bold cyan]Creating link[/bold cyan] {args.name}", spinner="dots"):
+        created = ctx.client.create_link(target_id, args.name, args.url)
+    print_success(
+        f"created link {created['rname']} ({format_resource_ref(created['res_str_id'])})"
         f" -> {args.url}"
     )
     return 0
@@ -576,15 +703,15 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return dispatch(args)
     except CLIUsageError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        error_console.print(f"[bold red]ERROR[/bold red] {exc}")
         return 2
     except DiskAPIError as exc:
-        print(f"api error: {exc}", file=sys.stderr)
+        error_console.print(f"[bold red]API[/bold red] {exc}")
         if exc.debug_msg:
-            print(f"debug: {exc.debug_msg}", file=sys.stderr)
+            print_warning(f"debug: {exc.debug_msg}")
         return 1
     except KeyboardInterrupt:
-        print("aborted", file=sys.stderr)
+        error_console.print("[bold yellow]ABORTED[/bold yellow]")
         return 130
 
 

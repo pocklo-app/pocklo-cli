@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urljoin
 
 import requests
@@ -29,6 +29,40 @@ class DiskAPIError(RuntimeError):
 class UploadToken:
     key: str
     upload_token: str
+
+
+ProgressCallback = Callable[[int, int | None], None]
+
+
+class UploadMonitor:
+    def __init__(self, local_path: Path, callback: ProgressCallback | None = None) -> None:
+        self.local_path = local_path
+        self.callback = callback
+        self.handle = local_path.open("rb")
+        self.total = local_path.stat().st_size
+        self.transferred = 0
+        if self.callback:
+            self.callback(0, self.total)
+
+    def read(self, size: int = -1) -> bytes:
+        chunk = self.handle.read(size)
+        if chunk:
+            self.transferred += len(chunk)
+            if self.callback:
+                self.callback(self.transferred, self.total)
+        return chunk
+
+    def close(self) -> None:
+        self.handle.close()
+
+    def __getattr__(self, item: str) -> Any:
+        return getattr(self.handle, item)
+
+    def __enter__(self) -> "UploadMonitor":
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.close()
 
 
 class DiskClient:
@@ -170,7 +204,13 @@ class DiskClient:
     def delete_resource(self, res_str_id: str) -> None:
         self.request("DELETE", f"/api/res/{res_str_id}")
 
-    def download_resource(self, res_str_id: str, destination: Path) -> str:
+    def download_resource(
+        self,
+        res_str_id: str,
+        destination: Path,
+        *,
+        progress_callback: ProgressCallback | None = None,
+    ) -> str:
         url = urljoin(f"{self.settings.backend_url}/", f"/api/res/{res_str_id}/dl".lstrip("/"))
         response = self.session.get(
             url,
@@ -192,11 +232,20 @@ class DiskClient:
                 status_code=response.status_code,
             ) from exc
 
+        total_header = response.headers.get("content-length")
+        total = int(total_header) if total_header and total_header.isdigit() else None
+        if progress_callback:
+            progress_callback(0, total)
+
         destination.parent.mkdir(parents=True, exist_ok=True)
+        transferred = 0
         with destination.open("wb") as handle:
             for chunk in response.iter_content(chunk_size=1024 * 128):
                 if chunk:
                     handle.write(chunk)
+                    transferred += len(chunk)
+                    if progress_callback:
+                        progress_callback(transferred, total)
         response.close()
         return response.url
 
@@ -210,8 +259,14 @@ class DiskClient:
             raise DiskAPIError("Upload-token endpoint returned an unexpected payload.")
         return UploadToken(key=body["key"], upload_token=body["upload_token"])
 
-    def upload_file(self, upload: UploadToken, local_path: Path) -> dict[str, Any]:
-        with local_path.open("rb") as handle:
+    def upload_file(
+        self,
+        upload: UploadToken,
+        local_path: Path,
+        *,
+        progress_callback: ProgressCallback | None = None,
+    ) -> dict[str, Any]:
+        with UploadMonitor(local_path, progress_callback) as handle:
             body = self.request(
                 "POST",
                 "",
