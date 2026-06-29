@@ -58,6 +58,12 @@ List a remote resource directly by resource ID:
 htx ls id:Ab12Cd
 ```
 
+The shorter `@资源ID` form works too:
+
+```bash
+htx ls @Ab12Cd
+```
+
 Upload a local file into a remote directory:
 
 ```bash

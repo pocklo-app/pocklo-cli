@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 import os
 import sys
@@ -90,11 +91,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Do not try to open the authorization URL in a browser.",
     )
 
-    subparsers.add_parser("whoami", help="Show the authenticated Disk user.")
+    whoami = subparsers.add_parser("whoami", help="Show the authenticated Disk user.")
+    whoami.add_argument("--json", action="store_true", help="Print the raw API payload.")
     subparsers.add_parser("logout", help="Clear the stored login token.")
 
     ls_cmd = subparsers.add_parser("ls", help="List a remote Disk directory.")
-    ls_cmd.add_argument("remote_path", nargs="?", default="/", help="Remote path or id:<res_str_id>.")
+    ls_cmd.add_argument(
+        "remote_path",
+        nargs="?",
+        default="/",
+        help="Remote path, @<res_str_id>, or id:<res_str_id>.",
+    )
     ls_cmd.add_argument("--json", action="store_true", help="Print the raw API payload.")
 
     upload = subparsers.add_parser("upload", help="Upload a local file or directory.")
@@ -103,7 +110,7 @@ def build_parser() -> argparse.ArgumentParser:
         "remote_path",
         nargs="?",
         default="/",
-        help="Target remote directory path or id:<res_str_id>.",
+        help="Target remote directory path, @<res_str_id>, or id:<res_str_id>.",
     )
 
     return parser
@@ -130,6 +137,50 @@ def format_remote_path(remote_path: str) -> str:
     return "/" + remote_path.strip("/")
 
 
+def format_resource_ref(res_str_id: str) -> str:
+    return f"@{res_str_id}"
+
+
+def format_timestamp(timestamp: Any) -> str:
+    if timestamp in (None, ""):
+        return "-"
+    try:
+        return dt.datetime.fromtimestamp(float(timestamp)).strftime("%Y-%m-%d %H:%M")
+    except (TypeError, ValueError, OSError):
+        return "-"
+
+
+def format_size(size: Any) -> str:
+    try:
+        value = float(size)
+    except (TypeError, ValueError):
+        return "-"
+    if value <= 0:
+        return "-"
+    units = ["B", "KB", "MB", "GB", "TB"]
+    index = 0
+    while value >= 1024 and index < len(units) - 1:
+        value /= 1024
+        index += 1
+    if index == 0:
+        return f"{int(value)} {units[index]}"
+    return f"{value:.1f} {units[index]}"
+
+
+def render_table(headers: list[str], rows: list[list[str]]) -> str:
+    widths = [len(header) for header in headers]
+    for row in rows:
+        for index, cell in enumerate(row):
+            widths[index] = max(widths[index], len(cell))
+
+    def render_row(values: list[str]) -> str:
+        return "  ".join(value.ljust(widths[index]) for index, value in enumerate(values))
+
+    lines = [render_row(headers), render_row(["-" * width for width in widths])]
+    lines.extend(render_row(row) for row in rows)
+    return "\n".join(lines)
+
+
 def sort_children(children: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(
         children,
@@ -146,10 +197,19 @@ def ensure_folder_resource(resource: dict[str, Any], *, label: str) -> None:
         raise CLIUsageError(f"{label} must refer to a remote directory.")
 
 
+def parse_resource_reference(reference: str) -> tuple[str | None, str]:
+    if reference.startswith("@"):
+        return reference[1:], "resource id"
+    if reference.startswith("id:"):
+        return reference[3:], "resource id"
+    return None, "path"
+
+
 def resolve_remote_reference(ctx: CommandContext, reference: str) -> dict[str, Any]:
     ctx.require_login()
-    if reference.startswith("id:"):
-        return ctx.client.get_resource(reference[3:])
+    resource_id, _ = parse_resource_reference(reference)
+    if resource_id:
+        return ctx.client.get_resource(resource_id)
 
     current_id = ctx.root_res_id()
     normalized = reference.strip("/")
@@ -221,19 +281,43 @@ def upload_directory_to_remote(ctx: CommandContext, local_dir: Path, parent_id: 
 
 def print_resource_listing(resource: dict[str, Any]) -> None:
     info = resource["info"]
-    print(f"{info['rname']} ({info['res_str_id']})")
-    print(f"type: {TYPE_LABELS.get(info['rtype'], 'unknown')}")
-    print(f"status: {STATUS_LABELS.get(info['status'], info['status'])}")
-    print(f"owner: {info['owner']['nickname']} ({info['owner']['user_id']})")
+    child_list = sort_children(resource.get("child_list", []))
+    print(f"Name    {info['rname']}")
+    print(f"Ref     {format_resource_ref(info['res_str_id'])}")
+    print(f"Type    {TYPE_LABELS.get(info['rtype'], 'unknown')}")
+    print(f"Status  {STATUS_LABELS.get(info['status'], info['status'])}")
+    print(f"Owner   {info['owner']['nickname']} ({info['owner']['user_id']})")
+    print(f"Time    {format_timestamp(info.get('create_time'))}")
 
     if info["rtype"] != RTYPE_FOLDER:
         return
 
+    print(f"Items   {len(child_list)}")
+    if not child_list:
+        print("\n(empty)")
+        return
+
+    rows = [
+        [
+            TYPE_LABELS.get(child["rtype"], "unknown"),
+            STATUS_LABELS.get(child["status"], str(child["status"])),
+            format_size(child.get("rsize")),
+            format_timestamp(child.get("create_time")),
+            child["rname"],
+            format_resource_ref(child["res_str_id"]),
+        ]
+        for child in child_list
+    ]
     print("")
-    for child in sort_children(resource.get("child_list", [])):
-        type_label = TYPE_LABELS.get(child["rtype"], "unknown").ljust(4)
-        status_label = STATUS_LABELS.get(child["status"], str(child["status"])).ljust(9)
-        print(f"{type_label} {status_label} {child['rname']} [{child['res_str_id']}]")
+    print(render_table(["TYPE", "STATUS", "SIZE", "CREATED", "NAME", "REF"], rows))
+
+
+def print_user_summary(user: dict[str, Any]) -> None:
+    print(f"Nickname  {user.get('nickname', '-')}")
+    print(f"User ID   {user.get('user_id', '-')}")
+    print(f"Avatar    {user.get('avatar', '-')}")
+    root_res = user.get("root_res", "-")
+    print(f"Root Ref  {format_resource_ref(root_res) if root_res != '-' else root_res}")
 
 
 def handle_login(ctx: CommandContext, args: argparse.Namespace) -> int:
@@ -261,7 +345,10 @@ def handle_login(ctx: CommandContext, args: argparse.Namespace) -> int:
 
 def handle_whoami(ctx: CommandContext, _: argparse.Namespace) -> int:
     user = ctx.sync_user()
-    print(json.dumps(user, ensure_ascii=False, indent=2))
+    if _.json:
+        print(json.dumps(user, ensure_ascii=False, indent=2))
+        return 0
+    print_user_summary(user)
     return 0
 
 
