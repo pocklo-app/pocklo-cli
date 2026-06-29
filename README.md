@@ -113,6 +113,24 @@ Delete a non-empty remote directory recursively:
 htx rm --recursive /Archive
 ```
 
+Download a remote file to the current directory:
+
+```bash
+htx download /Docs/report.pdf
+```
+
+Download a remote file into a chosen local path:
+
+```bash
+htx download @Ab12Cd ./downloads/report.pdf
+```
+
+Create a remote link resource:
+
+```bash
+htx link Search https://www.google.com /Bookmarks
+```
+
 ## State File
 
 The CLI stores the backend JWT token and the last fetched user payload in:

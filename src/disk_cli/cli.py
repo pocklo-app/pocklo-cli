@@ -139,6 +139,25 @@ def build_parser() -> argparse.ArgumentParser:
     rename.add_argument("remote_path", help="Remote path, @<res_str_id>, or id:<res_str_id>.")
     rename.add_argument("new_name", help="New name for the resource.")
 
+    download = subparsers.add_parser("download", help="Download a remote file or link target.")
+    download.add_argument("remote_path", help="Remote path, @<res_str_id>, or id:<res_str_id>.")
+    download.add_argument(
+        "local_path",
+        nargs="?",
+        type=Path,
+        help="Optional output file path or existing directory.",
+    )
+
+    link = subparsers.add_parser("link", help="Create a remote link resource.")
+    link.add_argument("name", help="Link resource name.")
+    link.add_argument("url", help="Link target URL.")
+    link.add_argument(
+        "parent",
+        nargs="?",
+        default="/",
+        help="Parent remote directory path, @<res_str_id>, or id:<res_str_id>.",
+    )
+
     return parser
 
 
@@ -311,6 +330,17 @@ def upload_directory_to_remote(ctx: CommandContext, local_dir: Path, parent_id: 
 
         for filename in filenames:
             upload_file_to_remote(ctx, current_root_path / filename, remote_parent_id)
+
+
+def resolve_download_destination(resource: dict[str, Any], local_path: Path | None) -> Path:
+    resource_name = resource["info"]["rname"]
+    if local_path is None:
+        return Path.cwd() / resource_name
+
+    resolved = local_path.expanduser()
+    if resolved.exists() and resolved.is_dir():
+        return resolved / resource_name
+    return resolved
 
 
 def delete_resource_recursive(ctx: CommandContext, resource: dict[str, Any]) -> None:
@@ -490,6 +520,35 @@ def handle_rename(ctx: CommandContext, args: argparse.Namespace) -> int:
     return 0
 
 
+def handle_download(ctx: CommandContext, args: argparse.Namespace) -> int:
+    resource = resolve_remote_reference(ctx, args.remote_path)
+    destination = resolve_download_destination(resource, args.local_path)
+    final_url = ctx.client.download_resource(resource["info"]["res_str_id"], destination)
+    print(
+        f"downloaded: {resource['info']['rname']} ({format_resource_ref(resource['info']['res_str_id'])})"
+        f" -> {destination}"
+    )
+    print(f"source: {final_url}")
+    return 0
+
+
+def handle_link(ctx: CommandContext, args: argparse.Namespace) -> int:
+    target_resource = resolve_remote_reference(ctx, args.parent)
+    ensure_folder_resource(target_resource, label=args.parent)
+    target_id = target_resource["info"]["res_str_id"]
+
+    existing = find_child_resource(ctx, target_id, args.name)
+    if existing is not None:
+        raise CLIUsageError(f"`{args.name}` already exists under {args.parent}.")
+
+    created = ctx.client.create_link(target_id, args.name, args.url)
+    print(
+        f"created link: {created['rname']} ({format_resource_ref(created['res_str_id'])})"
+        f" -> {args.url}"
+    )
+    return 0
+
+
 def dispatch(args: argparse.Namespace) -> int:
     settings = DiskSettings.load(args.config)
     client = DiskClient(settings)
@@ -505,6 +564,8 @@ def dispatch(args: argparse.Namespace) -> int:
         "rm": handle_rm,
         "mv": handle_mv,
         "rename": handle_rename,
+        "download": handle_download,
+        "link": handle_link,
     }
     return handlers[args.command](ctx, args)
 

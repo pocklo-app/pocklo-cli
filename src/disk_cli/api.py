@@ -170,6 +170,36 @@ class DiskClient:
     def delete_resource(self, res_str_id: str) -> None:
         self.request("DELETE", f"/api/res/{res_str_id}")
 
+    def download_resource(self, res_str_id: str, destination: Path) -> str:
+        url = urljoin(f"{self.settings.backend_url}/", f"/api/res/{res_str_id}/dl".lstrip("/"))
+        response = self.session.get(
+            url,
+            params={"token": self.settings.token or ""},
+            headers={},
+            timeout=self.timeout,
+            stream=True,
+            allow_redirects=True,
+        )
+        content_type = response.headers.get("content-type", "")
+        if "application/json" in content_type:
+            self._unwrap_response(response)
+            raise DiskAPIError("Download endpoint returned JSON instead of file content.")
+        try:
+            response.raise_for_status()
+        except requests.HTTPError as exc:
+            raise DiskAPIError(
+                f"Download failed with HTTP {response.status_code}.",
+                status_code=response.status_code,
+            ) from exc
+
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with destination.open("wb") as handle:
+            for chunk in response.iter_content(chunk_size=1024 * 128):
+                if chunk:
+                    handle.write(chunk)
+        response.close()
+        return response.url
+
     def get_upload_token(self, parent_id: str, filename: str) -> UploadToken:
         body = self.request(
             "GET",
