@@ -125,6 +125,12 @@ Download a remote file into a chosen local path:
 htx download @Ab12Cd ./downloads/report.pdf
 ```
 
+Download a remote directory recursively:
+
+```bash
+htx download @Ab12Cd ./downloads/Archive
+```
+
 Create a remote link resource:
 
 ```bash

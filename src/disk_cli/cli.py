@@ -170,7 +170,7 @@ def build_parser() -> argparse.ArgumentParser:
     rename.add_argument("remote_path", help="Remote path, @<res_str_id>, or id:<res_str_id>.")
     rename.add_argument("new_name", help="New name for the resource.")
 
-    download = subparsers.add_parser("download", help="Download a remote file or link target.")
+    download = subparsers.add_parser("download", help="Download a remote file, link target, or directory.")
     download.add_argument("remote_path", help="Remote path, @<res_str_id>, or id:<res_str_id>.")
     download.add_argument(
         "local_path",
@@ -422,6 +422,50 @@ def resolve_download_destination(resource: dict[str, Any], local_path: Path | No
     return resolved
 
 
+def download_file_to_local(ctx: CommandContext, resource: dict[str, Any], destination: Path) -> str:
+    with Progress(*progress_columns(), console=console, transient=True) as progress:
+        task_id = progress.add_task(f"Downloading {resource['info']['rname']}", total=None)
+
+        def on_progress(transferred: int, total: int | None) -> None:
+            progress.update(task_id, completed=transferred, total=total)
+
+        return ctx.client.download_resource(
+            resource["info"]["res_str_id"],
+            destination,
+            progress_callback=on_progress,
+        )
+
+
+def download_directory_to_local(
+    ctx: CommandContext,
+    resource: dict[str, Any],
+    destination: Path,
+) -> tuple[int, int]:
+    destination.mkdir(parents=True, exist_ok=True)
+    file_count = 0
+    directory_count = 1
+
+    for child in sort_children(resource.get("child_list", [])):
+        child_resource = ctx.client.get_resource(child["res_str_id"])
+        child_info = child_resource["info"]
+        child_destination = destination / child_info["rname"]
+        if child_info["rtype"] == RTYPE_FOLDER:
+            child_files, child_dirs = download_directory_to_local(ctx, child_resource, child_destination)
+            file_count += child_files
+            directory_count += child_dirs
+            continue
+
+        final_url = download_file_to_local(ctx, child_resource, child_destination)
+        file_count += 1
+        print_note(
+            f"downloaded {child_info['rname']} ({format_resource_ref(child_info['res_str_id'])})"
+            f" -> {child_destination}"
+        )
+        print_note(f"source: {final_url}")
+
+    return file_count, directory_count
+
+
 def delete_resource_recursive(ctx: CommandContext, resource: dict[str, Any]) -> None:
     info = resource["info"]
     if info["rtype"] == RTYPE_FOLDER:
@@ -648,20 +692,19 @@ def handle_rename(ctx: CommandContext, args: argparse.Namespace) -> int:
 
 
 def handle_download(ctx: CommandContext, args: argparse.Namespace) -> int:
-    with console.status("[bold cyan]Resolving remote file[/bold cyan]", spinner="dots"):
+    with console.status("[bold cyan]Resolving remote resource[/bold cyan]", spinner="dots"):
         resource = resolve_remote_reference(ctx, args.remote_path)
     destination = resolve_download_destination(resource, args.local_path)
-    with Progress(*progress_columns(), console=console, transient=True) as progress:
-        task_id = progress.add_task(f"Downloading {resource['info']['rname']}", total=None)
-
-        def on_progress(transferred: int, total: int | None) -> None:
-            progress.update(task_id, completed=transferred, total=total)
-
-        final_url = ctx.client.download_resource(
-            resource["info"]["res_str_id"],
-            destination,
-            progress_callback=on_progress,
+    if resource["info"]["rtype"] == RTYPE_FOLDER:
+        file_count, directory_count = download_directory_to_local(ctx, resource, destination)
+        print_success(
+            f"downloaded directory {resource['info']['rname']} ({format_resource_ref(resource['info']['res_str_id'])})"
+            f" -> {destination}"
         )
+        print_note(f"entries: {file_count} files across {directory_count} directories")
+        return 0
+
+    final_url = download_file_to_local(ctx, resource, destination)
     print_success(
         f"downloaded {resource['info']['rname']} ({format_resource_ref(resource['info']['res_str_id'])})"
         f" -> {destination}"
