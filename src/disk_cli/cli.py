@@ -4,11 +4,12 @@ import argparse
 import datetime as dt
 import json
 import os
+import subprocess
 import sys
 import webbrowser
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 
 from rich import box
@@ -76,7 +77,7 @@ class CommandContext:
         if not self.settings.token:
             raise CLIUsageError("Please run `htx login` first.")
 
-    def sync_user(self) -> dict[str, Any]:
+    def sync_user(self) -> Dict[str, Any]:
         self.require_login()
         user = self.client.get_current_user()
         self.settings.user = user
@@ -94,6 +95,20 @@ class CommandContext:
         return root_res
 
 
+@dataclass(frozen=True)
+class UploadFilters:
+    include_exts: Optional[set[str]] = None
+    exclude_exts: Optional[set[str]] = None
+
+    def matches(self, local_path: Path) -> bool:
+        extension = normalize_extension(local_path.suffix)
+        if self.include_exts is not None and extension not in self.include_exts:
+            return False
+        if self.exclude_exts is not None and extension in self.exclude_exts:
+            return False
+        return True
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="htx",
@@ -105,7 +120,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_STATE_PATH,
         help=f"State file path (default: {DEFAULT_STATE_PATH})",
     )
-    parser.add_argument("--version", action="version", version=f"disk-cli {__version__}")
+    parser.add_argument("--version", action="version", version=f"htx-cli {__version__}")
 
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -120,6 +135,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-open-browser",
         action="store_true",
         help="Do not try to open the authorization URL in a browser.",
+    )
+    login.add_argument(
+        "--browser",
+        action="store_true",
+        help="Force the legacy browser-based OAuth flow instead of using `qt oauth`.",
     )
 
     whoami = subparsers.add_parser("whoami", help="Show the authenticated Disk user.")
@@ -142,6 +162,20 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="?",
         default="/",
         help="Target remote directory path, @<res_str_id>, or id:<res_str_id>.",
+    )
+    upload.add_argument(
+        "--include-ext",
+        action="append",
+        default=[],
+        metavar="EXT",
+        help="Only upload files with this extension. Repeatable; accepts `jpg` or `.jpg`.",
+    )
+    upload.add_argument(
+        "--exclude-ext",
+        action="append",
+        default=[],
+        metavar="EXT",
+        help="Skip files with this extension. Repeatable; accepts `log` or `.log`.",
     )
 
     mkdir = subparsers.add_parser("mkdir", help="Create a remote directory.")
@@ -217,6 +251,26 @@ def format_resource_ref(res_str_id: str) -> str:
     return f"@{res_str_id}"
 
 
+def normalize_extension(value: str) -> str:
+    normalized = value.strip().lower()
+    if not normalized:
+        raise CLIUsageError("Extension values cannot be empty.")
+    if normalized == ".":
+        raise CLIUsageError("Extension values must include at least one character.")
+    if not normalized.startswith("."):
+        normalized = f".{normalized}"
+    return normalized
+
+
+def build_upload_filters(include_exts: List[str], exclude_exts: List[str]) -> UploadFilters:
+    normalized_include = {normalize_extension(ext) for ext in include_exts}
+    normalized_exclude = {normalize_extension(ext) for ext in exclude_exts}
+    return UploadFilters(
+        include_exts=normalized_include or None,
+        exclude_exts=normalized_exclude or None,
+    )
+
+
 def format_timestamp(timestamp: Any) -> str:
     if timestamp in (None, ""):
         return "-"
@@ -256,7 +310,7 @@ def status_text(status: int) -> Text:
     )
 
 
-def resource_name_text(resource: dict[str, Any]) -> Text:
+def resource_name_text(resource: Dict[str, Any]) -> Text:
     text = Text()
     text.append(format_resource_ref(resource["res_str_id"]), style="bold yellow")
     text.append(" ")
@@ -264,13 +318,13 @@ def resource_name_text(resource: dict[str, Any]) -> Text:
     return text
 
 
-def display_size(resource: dict[str, Any]) -> str:
+def display_size(resource: Dict[str, Any]) -> str:
     if resource.get("rtype") != RTYPE_FILE:
         return "-"
     return format_size(resource.get("rsize"))
 
 
-def progress_columns() -> list[Any]:
+def progress_columns() -> List[Any]:
     return [
         SpinnerColumn(style="bold cyan"),
         TextColumn("[progress.description]{task.description}"),
@@ -294,7 +348,7 @@ def print_warning(message: str) -> None:
     error_console.print(f"[bold yellow]WARN[/bold yellow] {message}")
 
 
-def sort_children(children: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def sort_children(children: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return sorted(
         children,
         key=lambda item: (
@@ -304,13 +358,13 @@ def sort_children(children: list[dict[str, Any]]) -> list[dict[str, Any]]:
     )
 
 
-def ensure_folder_resource(resource: dict[str, Any], *, label: str) -> None:
+def ensure_folder_resource(resource: Dict[str, Any], *, label: str) -> None:
     info = resource.get("info", resource)
     if info.get("rtype") != RTYPE_FOLDER:
         raise CLIUsageError(f"{label} must refer to a remote directory.")
 
 
-def parse_resource_reference(reference: str) -> tuple[str | None, str]:
+def parse_resource_reference(reference: str) -> Tuple[Optional[str], str]:
     if reference.startswith("@"):
         return reference[1:], "resource id"
     if reference.startswith("id:"):
@@ -318,7 +372,7 @@ def parse_resource_reference(reference: str) -> tuple[str | None, str]:
     return None, "path"
 
 
-def resolve_remote_reference(ctx: CommandContext, reference: str) -> dict[str, Any]:
+def resolve_remote_reference(ctx: CommandContext, reference: str) -> Dict[str, Any]:
     ctx.require_login()
     resource_id, _ = parse_resource_reference(reference)
     if resource_id:
@@ -345,7 +399,7 @@ def resolve_remote_reference(ctx: CommandContext, reference: str) -> dict[str, A
     return current_resource
 
 
-def find_child_folder(ctx: CommandContext, parent_id: str, folder_name: str) -> dict[str, Any] | None:
+def find_child_folder(ctx: CommandContext, parent_id: str, folder_name: str) -> Optional[Dict[str, Any]]:
     selector = ctx.client.get_selector(parent_id)
     for child in selector.get("child_list", []):
         if child.get("rname") == folder_name:
@@ -357,7 +411,7 @@ def find_child_folder(ctx: CommandContext, parent_id: str, folder_name: str) -> 
     return None
 
 
-def find_child_resource(ctx: CommandContext, parent_id: str, resource_name: str) -> dict[str, Any] | None:
+def find_child_resource(ctx: CommandContext, parent_id: str, resource_name: str) -> Optional[Dict[str, Any]]:
     selector = ctx.client.get_selector(parent_id)
     for child in selector.get("child_list", []):
         if child.get("rname") == resource_name:
@@ -374,7 +428,7 @@ def ensure_remote_folder(ctx: CommandContext, parent_id: str, folder_name: str) 
     return created["res_str_id"]
 
 
-def upload_file_to_remote(ctx: CommandContext, local_path: Path, parent_id: str) -> dict[str, Any]:
+def upload_file_to_remote(ctx: CommandContext, local_path: Path, parent_id: str) -> Dict[str, Any]:
     with console.status(f"[bold cyan]Preparing upload for[/bold cyan] {local_path.name}", spinner="dots"):
         upload_token = ctx.client.get_upload_token(parent_id, local_path.name)
 
@@ -382,7 +436,7 @@ def upload_file_to_remote(ctx: CommandContext, local_path: Path, parent_id: str)
     with Progress(*progress_columns(), console=console, transient=True) as progress:
         task_id = progress.add_task(f"Uploading {local_path.name}", total=total)
 
-        def on_progress(transferred: int, callback_total: int | None) -> None:
+        def on_progress(transferred: int, callback_total: Optional[int]) -> None:
             progress.update(task_id, completed=transferred, total=callback_total or total)
 
         uploaded = ctx.client.upload_file(upload_token, local_path, progress_callback=on_progress)
@@ -392,26 +446,59 @@ def upload_file_to_remote(ctx: CommandContext, local_path: Path, parent_id: str)
     return uploaded
 
 
-def upload_directory_to_remote(ctx: CommandContext, local_dir: Path, parent_id: str) -> None:
+def ensure_remote_directory_path(
+    ctx: CommandContext,
+    remote_folder_map: Dict[Path, str],
+    root_remote_id: str,
+    relative_parent: Path,
+) -> str:
+    if relative_parent in remote_folder_map:
+        return remote_folder_map[relative_parent]
+
+    parts = relative_parent.parts
+    current_relative = Path(".")
+    current_remote_id = root_remote_id
+    for part in parts:
+        current_relative = current_relative / part
+        existing = remote_folder_map.get(current_relative)
+        if existing is not None:
+            current_remote_id = existing
+            continue
+        current_remote_id = ensure_remote_folder(ctx, current_remote_id, part)
+        remote_folder_map[current_relative] = current_remote_id
+    return current_remote_id
+
+
+def upload_directory_to_remote(
+    ctx: CommandContext,
+    local_dir: Path,
+    parent_id: str,
+    upload_filters: UploadFilters,
+) -> Tuple[int, int]:
     root_remote_id = ensure_remote_folder(ctx, parent_id, local_dir.name)
-    remote_folder_map: dict[Path, str] = {Path("."): root_remote_id}
+    remote_folder_map: Dict[Path, str] = {Path("."): root_remote_id}
+    uploaded_count = 0
+    skipped_count = 0
 
     for current_root, dirnames, filenames in os.walk(local_dir):
         dirnames.sort()
         filenames.sort()
         current_root_path = Path(current_root)
         relative_root = current_root_path.relative_to(local_dir)
-        remote_parent_id = remote_folder_map[relative_root]
-
-        for dirname in dirnames:
-            child_relative = relative_root / dirname
-            remote_folder_map[child_relative] = ensure_remote_folder(ctx, remote_parent_id, dirname)
 
         for filename in filenames:
-            upload_file_to_remote(ctx, current_root_path / filename, remote_parent_id)
+            local_file = current_root_path / filename
+            if not upload_filters.matches(local_file):
+                skipped_count += 1
+                continue
+            remote_parent_id = ensure_remote_directory_path(ctx, remote_folder_map, root_remote_id, relative_root)
+            upload_file_to_remote(ctx, local_file, remote_parent_id)
+            uploaded_count += 1
+
+    return uploaded_count, skipped_count
 
 
-def resolve_download_destination(resource: dict[str, Any], local_path: Path | None) -> Path:
+def resolve_download_destination(resource: Dict[str, Any], local_path: Optional[Path]) -> Path:
     resource_name = resource["info"]["rname"]
     if local_path is None:
         return Path.cwd() / resource_name
@@ -422,11 +509,11 @@ def resolve_download_destination(resource: dict[str, Any], local_path: Path | No
     return resolved
 
 
-def download_file_to_local(ctx: CommandContext, resource: dict[str, Any], destination: Path) -> str:
+def download_file_to_local(ctx: CommandContext, resource: Dict[str, Any], destination: Path) -> str:
     with Progress(*progress_columns(), console=console, transient=True) as progress:
         task_id = progress.add_task(f"Downloading {resource['info']['rname']}", total=None)
 
-        def on_progress(transferred: int, total: int | None) -> None:
+        def on_progress(transferred: int, total: Optional[int]) -> None:
             progress.update(task_id, completed=transferred, total=total)
 
         return ctx.client.download_resource(
@@ -438,9 +525,9 @@ def download_file_to_local(ctx: CommandContext, resource: dict[str, Any], destin
 
 def download_directory_to_local(
     ctx: CommandContext,
-    resource: dict[str, Any],
+    resource: Dict[str, Any],
     destination: Path,
-) -> tuple[int, int]:
+) -> Tuple[int, int]:
     destination.mkdir(parents=True, exist_ok=True)
     file_count = 0
     directory_count = 1
@@ -466,7 +553,7 @@ def download_directory_to_local(
     return file_count, directory_count
 
 
-def delete_resource_recursive(ctx: CommandContext, resource: dict[str, Any]) -> None:
+def delete_resource_recursive(ctx: CommandContext, resource: Dict[str, Any]) -> None:
     info = resource["info"]
     if info["rtype"] == RTYPE_FOLDER:
         for child in sort_children(resource.get("child_list", [])):
@@ -476,7 +563,7 @@ def delete_resource_recursive(ctx: CommandContext, resource: dict[str, Any]) -> 
     print_success(f"deleted {info['rname']} ({format_resource_ref(info['res_str_id'])})")
 
 
-def print_resource_listing(resource: dict[str, Any]) -> None:
+def print_resource_listing(resource: Dict[str, Any]) -> None:
     info = resource["info"]
     child_list = sort_children(resource.get("child_list", []))
 
@@ -529,7 +616,7 @@ def print_resource_listing(resource: dict[str, Any]) -> None:
     console.print(table)
 
 
-def print_user_summary(user: dict[str, Any]) -> None:
+def print_user_summary(user: Dict[str, Any]) -> None:
     summary = Table.grid(padding=(0, 2))
     summary.add_column(style="bold cyan", justify="right")
     summary.add_column()
@@ -544,6 +631,13 @@ def print_user_summary(user: dict[str, Any]) -> None:
 
 
 def handle_login(ctx: CommandContext, args: argparse.Namespace) -> int:
+    if not args.code and not args.browser:
+        qt_command = ctx.settings.resolve_qt_command()
+        if qt_command:
+            qt_code = request_qt_oauth_code(ctx, qt_command)
+            if qt_code:
+                args.code = qt_code
+
     auth_url = ctx.settings.oauth_authorize_url()
     if args.print_url:
         console.print(auth_url)
@@ -578,6 +672,38 @@ def handle_login(ctx: CommandContext, args: argparse.Namespace) -> int:
     return 0
 
 
+def request_qt_oauth_code(ctx: CommandContext, qt_command: str) -> Optional[str]:
+    try:
+        result = subprocess.run(
+            [
+                qt_command,
+                "oauth",
+                "--app-id",
+                ctx.settings.sso_app_id,
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        return None
+    except subprocess.CalledProcessError as exc:
+        stderr = exc.stderr.strip() if exc.stderr else ""
+        stdout = exc.stdout.strip() if exc.stdout else ""
+        message = stderr or stdout
+        if message:
+            print_note(f"`qt oauth` unavailable, falling back to browser login: {message}")
+        return None
+
+    code = result.stdout.strip()
+    if not code:
+        print_note("`qt oauth` returned an empty authorization code, falling back to browser login.")
+        return None
+
+    print_note("received OAuth code from `qt oauth`; exchanging directly with Disk backend")
+    return code
+
+
 def handle_whoami(ctx: CommandContext, _: argparse.Namespace) -> int:
     with console.status("[bold cyan]Fetching user profile[/bold cyan]", spinner="dots"):
         user = ctx.sync_user()
@@ -609,6 +735,7 @@ def handle_upload(ctx: CommandContext, args: argparse.Namespace) -> int:
     local_path = args.local_path.expanduser().resolve()
     if not local_path.exists():
         raise CLIUsageError(f"Local path does not exist: {local_path}")
+    upload_filters = build_upload_filters(args.include_ext, args.exclude_ext)
 
     with console.status("[bold cyan]Resolving target directory[/bold cyan]", spinner="dots"):
         target_resource = resolve_remote_reference(ctx, args.remote_path)
@@ -616,10 +743,14 @@ def handle_upload(ctx: CommandContext, args: argparse.Namespace) -> int:
     target_id = target_resource["info"]["res_str_id"]
 
     if local_path.is_file():
+        if not upload_filters.matches(local_path):
+            print_note(f"skipped {local_path.name} because it does not match the upload extension filters")
+            return 0
         upload_file_to_remote(ctx, local_path, target_id)
         return 0
 
-    upload_directory_to_remote(ctx, local_path, target_id)
+    uploaded_count, skipped_count = upload_directory_to_remote(ctx, local_path, target_id, upload_filters)
+    print_note(f"directory upload summary: {uploaded_count} uploaded, {skipped_count} skipped")
     return 0
 
 
@@ -753,7 +884,7 @@ def dispatch(args: argparse.Namespace) -> int:
     return handlers[args.command](ctx, args)
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: Optional[List[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
