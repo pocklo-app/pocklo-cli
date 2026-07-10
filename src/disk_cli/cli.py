@@ -139,7 +139,7 @@ def build_parser() -> argparse.ArgumentParser:
     login.add_argument(
         "--browser",
         action="store_true",
-        help="Force the legacy browser-based OAuth flow instead of using `qt oauth`.",
+        help="Force the browser-based web OAuth flow instead of using `qt app oauth`.",
     )
 
     whoami = subparsers.add_parser("whoami", help="Show the authenticated Disk user.")
@@ -677,9 +677,12 @@ def request_qt_oauth_code(ctx: CommandContext, qt_command: str) -> Optional[str]
         result = subprocess.run(
             [
                 qt_command,
+                "app",
                 "oauth",
                 "--app-id",
                 ctx.settings.sso_app_id,
+                "--client-name",
+                "htx-cli",
             ],
             check=True,
             capture_output=True,
@@ -692,15 +695,15 @@ def request_qt_oauth_code(ctx: CommandContext, qt_command: str) -> Optional[str]
         stdout = exc.stdout.strip() if exc.stdout else ""
         message = stderr or stdout
         if message:
-            print_note(f"`qt oauth` unavailable, falling back to browser login: {message}")
+            print_note(f"`qt app oauth` unavailable, falling back to browser login: {message}")
         return None
 
     code = result.stdout.strip()
     if not code:
-        print_note("`qt oauth` returned an empty authorization code, falling back to browser login.")
+        print_note("`qt app oauth` returned an empty authorization code, falling back to browser login.")
         return None
 
-    print_note("received OAuth code from `qt oauth`; exchanging directly with Disk backend")
+    print_note("received OAuth code from `qt app oauth`; exchanging directly with Disk backend")
     return code
 
 
