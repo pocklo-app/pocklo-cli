@@ -8,10 +8,10 @@ from shutil import which
 from typing import Any, Dict, Optional
 from urllib.parse import urlencode
 
-DEFAULT_APP_ID = "R41nXZEwpfl6tw6KYyoEZ4FYST4BXPlF"
+DEFAULT_APP_ID = "R41nXZEw"
 DEFAULT_BACKEND_URL = "https://disk.6-79.cn"
 DEFAULT_QINIU_UPLOAD_URL = "https://up.qiniup.com"
-DEFAULT_SSO_URL = "https://sso.6-79.cn/oauth/"
+DEFAULT_SSO_URL = "https://qt.6-79.cn/oauth/"
 DEFAULT_STATE_PATH = Path.home() / ".config" / "htx-cli" / "state.json"
 LEGACY_STATE_PATH = Path.home() / ".config" / "disk-cli" / "state.json"
 DEFAULT_QT_COMMAND = "qt"
