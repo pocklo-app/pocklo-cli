@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import time
-from typing import Any, Callable
+from typing import Any, Callable, Dict, Optional
 from urllib.parse import urljoin
 
 import requests
@@ -16,9 +16,9 @@ class DiskAPIError(RuntimeError):
         self,
         message: str,
         *,
-        status_code: int | None = None,
-        identifier: str | None = None,
-        debug_msg: str | None = None,
+        status_code: Optional[int] = None,
+        identifier: Optional[str] = None,
+        debug_msg: Optional[str] = None,
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
@@ -32,13 +32,13 @@ class UploadToken:
     upload_token: str
 
 
-ProgressCallback = Callable[[int, int | None], None]
+ProgressCallback = Callable[[int, Optional[int]], None]
 MAX_RETRIES = 5
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 
 
 class UploadMonitor:
-    def __init__(self, local_path: Path, callback: ProgressCallback | None = None) -> None:
+    def __init__(self, local_path: Path, callback: Optional[ProgressCallback] = None) -> None:
         self.local_path = local_path
         self.callback = callback
         self.handle = local_path.open("rb")
@@ -74,8 +74,8 @@ class DiskClient:
         self.timeout = timeout
         self.session = requests.Session()
 
-    def _headers(self, *, include_auth: bool = True) -> dict[str, str]:
-        headers: dict[str, str] = {}
+    def _headers(self, *, include_auth: bool = True) -> Dict[str, str]:
+        headers: Dict[str, str] = {}
         if include_auth and self.settings.token:
             headers["Token"] = self.settings.token
         return headers
@@ -114,10 +114,10 @@ class DiskClient:
         method: str,
         url: str,
         *,
-        params: dict[str, Any] | None = None,
-        json: dict[str, Any] | None = None,
-        data: dict[str, Any] | None = None,
-        files: dict[str, Any] | None = None,
+        params: Optional[Dict[str, Any]] = None,
+        json: Optional[Dict[str, Any]] = None,
+        data: Optional[Dict[str, Any]] = None,
+        files: Optional[Dict[str, Any]] = None,
         include_auth: bool = True,
     ) -> Any:
         response = self.session.request(
@@ -137,15 +137,15 @@ class DiskClient:
         method: str,
         path: str,
         *,
-        params: dict[str, Any] | None = None,
-        json: dict[str, Any] | None = None,
-        absolute_url: str | None = None,
+        params: Optional[Dict[str, Any]] = None,
+        json: Optional[Dict[str, Any]] = None,
+        absolute_url: Optional[str] = None,
         include_auth: bool = True,
-        data: dict[str, Any] | None = None,
-        files: dict[str, Any] | None = None,
+        data: Optional[Dict[str, Any]] = None,
+        files: Optional[Dict[str, Any]] = None,
     ) -> Any:
         url = absolute_url or urljoin(f"{self.settings.backend_url}/", path.lstrip("/"))
-        last_error: Exception | None = None
+        last_error: Optional[Exception] = None
         for attempt in range(1, MAX_RETRIES + 1):
             try:
                 return self._request_once(
@@ -173,7 +173,7 @@ class DiskClient:
             raise last_error
         raise DiskAPIError(f"Request failed after {MAX_RETRIES} attempts.")
 
-    def exchange_code(self, code: str) -> dict[str, Any]:
+    def exchange_code(self, code: str) -> Dict[str, Any]:
         body = self.request(
             "GET",
             "/api/oauth/qtb/callback",
@@ -185,26 +185,26 @@ class DiskClient:
         self.settings.token = body["token"]
         return body
 
-    def get_current_user(self) -> dict[str, Any]:
+    def get_current_user(self) -> Dict[str, Any]:
         body = self.request("GET", "/api/user/")
         if not isinstance(body, dict):
             raise DiskAPIError("User endpoint returned an unexpected payload.")
         return body
 
-    def get_resource(self, res_str_id: str, visit_key: str | None = None) -> dict[str, Any]:
+    def get_resource(self, res_str_id: str, visit_key: Optional[str] = None) -> Dict[str, Any]:
         params = {"visit_key": visit_key} if visit_key else None
         body = self.request("GET", f"/api/res/{res_str_id}", params=params)
         if not isinstance(body, dict):
             raise DiskAPIError("Resource endpoint returned an unexpected payload.")
         return body
 
-    def get_selector(self, res_str_id: str) -> dict[str, Any]:
+    def get_selector(self, res_str_id: str) -> Dict[str, Any]:
         body = self.request("GET", f"/api/res/{res_str_id}/selector")
         if not isinstance(body, dict):
             raise DiskAPIError("Selector endpoint returned an unexpected payload.")
         return body
 
-    def create_folder(self, parent_id: str, folder_name: str) -> dict[str, Any]:
+    def create_folder(self, parent_id: str, folder_name: str) -> Dict[str, Any]:
         body = self.request(
             "POST",
             f"/api/res/{parent_id}/folder",
@@ -214,7 +214,7 @@ class DiskClient:
             raise DiskAPIError("Create-folder endpoint returned an unexpected payload.")
         return body
 
-    def create_link(self, parent_id: str, link_name: str, link: str) -> dict[str, Any]:
+    def create_link(self, parent_id: str, link_name: str, link: str) -> Dict[str, Any]:
         body = self.request(
             "POST",
             f"/api/res/{parent_id}/link",
@@ -228,13 +228,13 @@ class DiskClient:
         self,
         res_str_id: str,
         *,
-        rname: str | None = None,
-        status: int | None = None,
-        description: str | None = None,
-        visit_key: str | None = None,
-        right_bubble: bool | None = None,
-        parent_str_id: str | None = None,
-    ) -> dict[str, Any]:
+        rname: Optional[str] = None,
+        status: Optional[int] = None,
+        description: Optional[str] = None,
+        visit_key: Optional[str] = None,
+        right_bubble: Optional[bool] = None,
+        parent_str_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         body = self.request(
             "PUT",
             f"/api/res/{res_str_id}",
@@ -259,12 +259,12 @@ class DiskClient:
         res_str_id: str,
         destination: Path,
         *,
-        progress_callback: ProgressCallback | None = None,
+        progress_callback: Optional[ProgressCallback] = None,
     ) -> str:
         url = urljoin(f"{self.settings.backend_url}/", f"/api/res/{res_str_id}/dl".lstrip("/"))
-        last_error: Exception | None = None
+        last_error: Optional[Exception] = None
         for attempt in range(1, MAX_RETRIES + 1):
-            response: requests.Response | None = None
+            response: Optional[requests.Response] = None
             try:
                 response = self.session.get(
                     url,
@@ -335,9 +335,9 @@ class DiskClient:
         upload: UploadToken,
         local_path: Path,
         *,
-        progress_callback: ProgressCallback | None = None,
-    ) -> dict[str, Any]:
-        last_error: Exception | None = None
+        progress_callback: Optional[ProgressCallback] = None,
+    ) -> Dict[str, Any]:
+        last_error: Optional[Exception] = None
         for attempt in range(1, MAX_RETRIES + 1):
             try:
                 with UploadMonitor(local_path, progress_callback) as handle:

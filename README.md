@@ -1,6 +1,6 @@
-# disk-cli
+# htx-cli
 
-`disk-cli` is a command-line client for the Disk backend API. It supports:
+`htx-cli` is a command-line client for the Disk backend API. It supports:
 
 - SSO-based login by exchanging an authorization `code` for the backend JWT token
 - Listing remote Disk directories
@@ -10,7 +10,12 @@
 ## Install
 
 ```bash
-source /Users/jyonn/Projects/venv/django/bin/activate
+pip install htx-cli
+```
+
+For local development:
+
+```bash
 pip install -e .
 ```
 
@@ -75,6 +80,20 @@ Upload a local directory recursively. The local directory name is created or reu
 ```bash
 htx upload ./albums /Photos
 ```
+
+Only upload selected extensions:
+
+```bash
+htx upload ./albums /Photos --include-ext jpg --include-ext png
+```
+
+Exclude specific extensions:
+
+```bash
+htx upload ./albums /Photos --exclude-ext tmp --exclude-ext log
+```
+
+You can combine both flags. `--exclude-ext` takes precedence when both match the same file.
 
 Create a directory under the remote root:
 
@@ -142,7 +161,7 @@ htx link Search https://www.google.com /Bookmarks
 The CLI stores the backend JWT token and the last fetched user payload in:
 
 ```text
-~/.config/disk-cli/state.json
+~/.config/htx-cli/state.json
 ```
 
 Use `--config` to point to a different state file.
