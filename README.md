@@ -6,6 +6,7 @@
 - Listing remote Disk directories
 - Uploading a local file into a remote Disk directory
 - Uploading a local directory recursively while recreating its folder structure remotely
+- Resumable multipart uploads with real remote-part progress
 
 ## Install
 
@@ -165,3 +166,9 @@ The CLI stores the backend JWT token and the last fetched user payload in:
 ```
 
 Use `--config` to point to a different state file.
+
+Multipart upload resume records are stored under:
+
+```text
+~/.config/htx-cli/upload-records/
+```

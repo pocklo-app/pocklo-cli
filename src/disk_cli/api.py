@@ -7,6 +7,8 @@ from typing import Any, Callable, Dict, Optional
 from urllib.parse import urljoin
 
 import requests
+from qiniu import Auth
+from qiniu.services.storage.uploader import ResumeUploaderV2, UploadProgressRecorder
 
 from .config import DiskSettings
 
@@ -33,39 +35,9 @@ class UploadToken:
 
 
 ProgressCallback = Callable[[int, Optional[int]], None]
+UploadPhaseCallback = Callable[[str], None]
 MAX_RETRIES = 5
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
-
-
-class UploadMonitor:
-    def __init__(self, local_path: Path, callback: Optional[ProgressCallback] = None) -> None:
-        self.local_path = local_path
-        self.callback = callback
-        self.handle = local_path.open("rb")
-        self.total = local_path.stat().st_size
-        self.transferred = 0
-        if self.callback:
-            self.callback(0, self.total)
-
-    def read(self, size: int = -1) -> bytes:
-        chunk = self.handle.read(size)
-        if chunk:
-            self.transferred += len(chunk)
-            if self.callback:
-                self.callback(self.transferred, self.total)
-        return chunk
-
-    def close(self) -> None:
-        self.handle.close()
-
-    def __getattr__(self, item: str) -> Any:
-        return getattr(self.handle, item)
-
-    def __enter__(self) -> "UploadMonitor":
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
-        self.close()
 
 
 class DiskClient:
@@ -88,13 +60,17 @@ class DiskClient:
                 f"Server returned a non-JSON response (HTTP {response.status_code})."
             ) from exc
 
+        return self._unwrap_payload(payload, status_code=response.status_code)
+
+    @staticmethod
+    def _unwrap_payload(payload: Any, *, status_code: Optional[int] = None) -> Any:
         if not isinstance(payload, dict) or "code" not in payload:
             return payload
 
         if payload.get("code") != 0:
             raise DiskAPIError(
                 payload.get("msg") or "The Disk API request failed.",
-                status_code=response.status_code,
+                status_code=status_code,
                 identifier=payload.get("identifier"),
                 debug_msg=payload.get("debug_msg"),
             )
@@ -336,18 +312,71 @@ class DiskClient:
         local_path: Path,
         *,
         progress_callback: Optional[ProgressCallback] = None,
+        phase_callback: Optional[UploadPhaseCallback] = None,
     ) -> Dict[str, Any]:
         last_error: Optional[Exception] = None
+        file_size = local_path.stat().st_size
+        bucket_name = Auth.get_bucket_name(upload.upload_token)
+        if not bucket_name:
+            raise DiskAPIError("Upload token does not contain a valid bucket name.")
+
         for attempt in range(1, MAX_RETRIES + 1):
             try:
-                with UploadMonitor(local_path, progress_callback) as handle:
-                    body = self._request_once(
-                        "POST",
-                        self.settings.qiniu_upload_url,
-                        include_auth=False,
-                        data={"key": upload.key, "token": upload.upload_token},
-                        files={"file": (local_path.name, handle)},
+                self.settings.upload_record_dir.mkdir(parents=True, exist_ok=True)
+                recorder = UploadProgressRecorder(str(self.settings.upload_record_dir))
+                uploader = ResumeUploaderV2(
+                    bucket_name,
+                    part_size=4 * 1024 * 1024,
+                    progress_handler=progress_callback,
+                    upload_progress_recorder=recorder,
+                )
+
+                context, resp = uploader.initial_parts(
+                    up_token=upload.upload_token,
+                    key=upload.key,
+                    file_path=str(local_path),
+                    file_name=local_path.name,
+                )
+                if resp is not None and not resp.ok():
+                    raise DiskAPIError(
+                        f"Failed to initialize multipart upload: {resp.error}",
+                        status_code=resp.status_code,
+                        debug_msg=resp.text_body,
                     )
+
+                with local_path.open("rb") as file_handle:
+                    _, resp = uploader.upload_parts(
+                        up_token=upload.upload_token,
+                        data=file_handle,
+                        data_size=file_size,
+                        context=context,
+                        key=upload.key,
+                        file_name=local_path.name,
+                    )
+                if resp is not None and not resp.ok():
+                    raise DiskAPIError(
+                        f"Failed while uploading file parts: {resp.error}",
+                        status_code=resp.status_code,
+                        debug_msg=resp.text_body,
+                    )
+
+                if phase_callback:
+                    phase_callback("finalizing")
+
+                body, resp = uploader.complete_parts(
+                    up_token=upload.upload_token,
+                    data_size=file_size,
+                    context=context,
+                    key=upload.key,
+                    file_name=local_path.name,
+                )
+                if resp is not None and not resp.ok():
+                    raise DiskAPIError(
+                        f"Failed to finalize multipart upload: {resp.error}",
+                        status_code=resp.status_code,
+                        debug_msg=resp.text_body,
+                    )
+                body = self._unwrap_payload(body, status_code=resp.status_code if resp is not None else None)
                 if not isinstance(body, dict):
                     raise DiskAPIError("Upload endpoint returned an unexpected payload.")
                 return body

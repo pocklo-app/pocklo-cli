@@ -439,7 +439,16 @@ def upload_file_to_remote(ctx: CommandContext, local_path: Path, parent_id: str)
         def on_progress(transferred: int, callback_total: Optional[int]) -> None:
             progress.update(task_id, completed=transferred, total=callback_total or total)
 
-        uploaded = ctx.client.upload_file(upload_token, local_path, progress_callback=on_progress)
+        def on_phase(phase: str) -> None:
+            if phase == "finalizing":
+                progress.update(task_id, completed=total, total=total, description=f"Finalizing {local_path.name}")
+
+        uploaded = ctx.client.upload_file(
+            upload_token,
+            local_path,
+            progress_callback=on_progress,
+            phase_callback=on_phase,
+        )
     print_success(
         f"uploaded {local_path.name} -> {uploaded['rname']} ({format_resource_ref(uploaded['res_str_id'])})"
     )
