@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import time
 from typing import Any, Callable, Dict, Optional
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import requests
 from qiniu import Auth
@@ -230,6 +230,27 @@ class DiskClient:
     def delete_resource(self, res_str_id: str) -> None:
         self.request("DELETE", f"/api/res/{res_str_id}")
 
+    def _is_backend_json_api_response(
+        self,
+        response: requests.Response,
+        *,
+        requested_url: str,
+    ) -> bool:
+        content_type = response.headers.get("content-type", "").lower()
+        if "application/json" not in content_type:
+            return False
+
+        content_disposition = response.headers.get("content-disposition", "").lower()
+        if "attachment" in content_disposition or "filename=" in content_disposition:
+            return False
+
+        final_url = urlparse(response.url)
+        backend_url = urlparse(self.settings.backend_url)
+        requested = urlparse(requested_url)
+        if (final_url.scheme, final_url.netloc) != (backend_url.scheme, backend_url.netloc):
+            return False
+        return final_url.path.rstrip("/") == requested.path.rstrip("/")
+
     def download_resource(
         self,
         res_str_id: str,
@@ -250,10 +271,6 @@ class DiskClient:
                     stream=True,
                     allow_redirects=True,
                 )
-                content_type = response.headers.get("content-type", "")
-                if "application/json" in content_type:
-                    self._unwrap_response(response)
-                    raise DiskAPIError("Download endpoint returned JSON instead of file content.")
                 try:
                     response.raise_for_status()
                 except requests.HTTPError as exc:
@@ -261,6 +278,12 @@ class DiskClient:
                         f"Download failed with HTTP {response.status_code}.",
                         status_code=response.status_code,
                     ) from exc
+
+                if self._is_backend_json_api_response(response, requested_url=url):
+                    self._unwrap_response(response)
+                    raise DiskAPIError(
+                        "Download endpoint returned JSON metadata instead of file content."
+                    )
 
                 total_header = response.headers.get("content-length")
                 total = int(total_header) if total_header and total_header.isdigit() else None
