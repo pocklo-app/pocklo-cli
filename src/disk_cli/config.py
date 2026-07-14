@@ -14,6 +14,11 @@ DEFAULT_SSO_URL = "https://qt.6-79.cn/oauth/"
 DEFAULT_STATE_PATH = Path.home() / ".config" / "htx-cli" / "state.json"
 DEFAULT_UPLOAD_RECORD_DIR = Path.home() / ".config" / "htx-cli" / "upload-records"
 LEGACY_STATE_PATH = Path.home() / ".config" / "disk-cli" / "state.json"
+LEGACY_APP_IDS = {"R41nXZEwpfl6tw6KYyoEZ4FYST4BXPlF"}
+LEGACY_SSO_URLS = {
+    "https://sso.6-79.cn/oauth",
+    "https://sso.6-79.cn/oauth/",
+}
 DEFAULT_QT_COMMAND = "qt"
 
 
@@ -32,23 +37,55 @@ class DiskSettings:
         ).expanduser()
     )
 
+    @staticmethod
+    def _default_sso_url() -> str:
+        return os.getenv("DISK_SSO_URL", DEFAULT_SSO_URL)
+
+    @staticmethod
+    def _default_sso_app_id() -> str:
+        return os.getenv("DISK_SSO_APP_ID", DEFAULT_APP_ID)
+
+    @classmethod
+    def _normalize_oauth_settings(
+        cls,
+        *,
+        sso_url: Optional[str],
+        sso_app_id: Optional[str],
+    ) -> tuple[str, str]:
+        normalized_sso_url = sso_url or cls._default_sso_url()
+        normalized_sso_app_id = sso_app_id or cls._default_sso_app_id()
+
+        if normalized_sso_url in LEGACY_SSO_URLS:
+            normalized_sso_url = cls._default_sso_url()
+        if normalized_sso_app_id in LEGACY_APP_IDS:
+            normalized_sso_app_id = cls._default_sso_app_id()
+
+        return normalized_sso_url, normalized_sso_app_id
+
     @classmethod
     def load(cls, state_path: Optional[Path] = None) -> "DiskSettings":
-        resolved_path = (state_path or DEFAULT_STATE_PATH).expanduser()
-        if state_path is None and not resolved_path.exists() and LEGACY_STATE_PATH.exists():
-            resolved_path = LEGACY_STATE_PATH
-        if not resolved_path.exists():
-            return cls(state_path=resolved_path)
+        preferred_path = (state_path or DEFAULT_STATE_PATH).expanduser()
+        source_path = preferred_path
+        loaded_from_legacy_path = False
+        if state_path is None and not preferred_path.exists() and LEGACY_STATE_PATH.exists():
+            source_path = LEGACY_STATE_PATH
+            loaded_from_legacy_path = True
+        if not source_path.exists():
+            return cls(state_path=preferred_path)
 
-        data = json.loads(resolved_path.read_text(encoding="utf-8"))
-        return cls(
+        data = json.loads(source_path.read_text(encoding="utf-8"))
+        normalized_sso_url, normalized_sso_app_id = cls._normalize_oauth_settings(
+            sso_url=data.get("sso_url"),
+            sso_app_id=data.get("sso_app_id"),
+        )
+        settings = cls(
             backend_url=data.get("backend_url", os.getenv("DISK_BACKEND_URL", DEFAULT_BACKEND_URL)),
-            sso_url=data.get("sso_url", os.getenv("DISK_SSO_URL", DEFAULT_SSO_URL)),
-            sso_app_id=data.get("sso_app_id", os.getenv("DISK_SSO_APP_ID", DEFAULT_APP_ID)),
+            sso_url=normalized_sso_url,
+            sso_app_id=normalized_sso_app_id,
             qt_command=data.get("qt_command", os.getenv("DISK_QT_COMMAND", DEFAULT_QT_COMMAND)),
             token=data.get("token"),
             user=data.get("user"),
-            state_path=resolved_path,
+            state_path=preferred_path if loaded_from_legacy_path else source_path,
             upload_record_dir=Path(
                 data.get(
                     "upload_record_dir",
@@ -56,6 +93,13 @@ class DiskSettings:
                 )
             ).expanduser(),
         )
+        should_resave = loaded_from_legacy_path or (
+            data.get("sso_url") != normalized_sso_url
+            or data.get("sso_app_id") != normalized_sso_app_id
+        )
+        if should_resave:
+            settings.save()
+        return settings
 
     def save(self) -> None:
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
