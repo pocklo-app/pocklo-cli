@@ -180,6 +180,12 @@ class DiskClient:
             raise DiskAPIError("Selector endpoint returned an unexpected payload.")
         return body
 
+    def get_path(self, res_str_id: str) -> list[str]:
+        body = self.request("GET", f"/api/res/{res_str_id}/path")
+        if not isinstance(body, list):
+            raise DiskAPIError("Path endpoint returned an unexpected payload.")
+        return [str(item) for item in body]
+
     def create_folder(self, parent_id: str, folder_name: str) -> Dict[str, Any]:
         body = self.request(
             "POST",

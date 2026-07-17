@@ -4,6 +4,7 @@
 
 - SSO-based login by exchanging an authorization `code` for the backend JWT token
 - Listing remote Disk directories
+- Switching into a remote working directory with `cd`
 - Uploading a local file into a remote Disk directory
 - Uploading a local directory recursively while recreating its folder structure remotely
 - Resumable multipart uploads with real remote-part progress
@@ -46,16 +47,36 @@ Show the authenticated user:
 htx whoami
 ```
 
-List the root directory:
+Change into a remote directory:
+
+```bash
+htx cd @Ab12Cd
+htx cd Projects
+htx cd ../Archive
+```
+
+Print the current remote directory:
+
+```bash
+htx pwd
+```
+
+List the current remote directory:
 
 ```bash
 htx ls
 ```
 
-List a nested remote directory by path:
+List the remote root directory explicitly:
 
 ```bash
-htx ls /Photos/2024
+htx ls /
+```
+
+List a nested remote directory by relative path:
+
+```bash
+htx ls Photos/2024
 ```
 
 List a remote resource directly by resource ID:
@@ -73,13 +94,13 @@ htx ls @Ab12Cd
 Upload a local file into a remote directory:
 
 ```bash
-htx upload ./report.pdf /Docs
+htx upload ./report.pdf
 ```
 
 Upload a local directory recursively. The local directory name is created or reused under the target remote directory:
 
 ```bash
-htx upload ./albums /Photos
+htx upload ./albums
 ```
 
 Only upload selected extensions:
@@ -100,6 +121,8 @@ Create a directory under the remote root:
 
 ```bash
 htx mkdir Projects
+htx cd Projects
+htx mkdir 2026
 ```
 
 Create a directory under a specific remote folder:
@@ -118,25 +141,25 @@ htx rename /Photos/old-name.jpg new-name.jpg
 Move a remote resource into another remote directory:
 
 ```bash
-htx mv /Photos/new-name.jpg /Archive
+htx mv new-name.jpg ../Archive
 ```
 
 Delete a remote file:
 
 ```bash
-htx rm /Archive/new-name.jpg
+htx rm new-name.jpg
 ```
 
 Delete a non-empty remote directory recursively:
 
 ```bash
-htx rm --recursive /Archive
+htx rm --recursive Archive
 ```
 
 Download a remote file to the current directory:
 
 ```bash
-htx download /Docs/report.pdf
+htx download report.pdf
 ```
 
 Download a remote file into a chosen local path:
@@ -154,7 +177,7 @@ htx download @Ab12Cd ./downloads/Archive
 Create a remote link resource:
 
 ```bash
-htx link Search https://www.google.com /Bookmarks
+htx link Search https://www.google.com
 ```
 
 ## State File

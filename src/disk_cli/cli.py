@@ -81,6 +81,9 @@ class CommandContext:
         self.require_login()
         user = self.client.get_current_user()
         self.settings.user = user
+        if not self.settings.cwd_res_id:
+            self.settings.cwd_res_id = user.get("root_res")
+            self.settings.cwd_path = "/"
         self.settings.save()
         return user
 
@@ -93,6 +96,49 @@ class CommandContext:
         if not root_res:
             raise CLIUsageError("The current user does not have a root resource folder.")
         return root_res
+
+    def current_dir_res_id(self) -> str:
+        current_id = self.settings.cwd_res_id
+        if current_id:
+            return current_id
+        current_id = self.root_res_id()
+        self.settings.cwd_res_id = current_id
+        self.settings.cwd_path = "/"
+        self.settings.save()
+        return current_id
+
+    def current_dir_path(self) -> str:
+        return self.settings.cwd_path or "/"
+
+    def resource_path(self, resource: Dict[str, Any]) -> str:
+        info = resource["info"]
+        root_res_id = self.root_res_id()
+        if info["res_str_id"] == root_res_id:
+            return "/"
+
+        path_ids = list(reversed(self.client.get_path(info["res_str_id"])))
+        if not path_ids or path_ids[0] != root_res_id:
+            return "/" + str(info["rname"]).strip("/")
+
+        names: List[str] = []
+        for res_str_id in path_ids[1:]:
+            if res_str_id == info["res_str_id"]:
+                names.append(str(info["rname"]))
+                continue
+            ancestor = self.client.get_resource(res_str_id)
+            names.append(str(ancestor["info"]["rname"]))
+        return "/" + "/".join(part.strip("/") for part in names if part)
+
+    def set_current_dir(self, resource: Dict[str, Any]) -> str:
+        ensure_folder_resource(resource, label=resource["info"]["rname"])
+        self.settings.cwd_res_id = resource["info"]["res_str_id"]
+        self.settings.cwd_path = self.resource_path(resource)
+        self.settings.save()
+        return self.settings.cwd_path
+
+    def reset_current_dir(self) -> str:
+        root_resource = self.client.get_resource(self.root_res_id())
+        return self.set_current_dir(root_resource)
 
 
 @dataclass(frozen=True)
@@ -145,12 +191,21 @@ def build_parser() -> argparse.ArgumentParser:
     whoami = subparsers.add_parser("whoami", help="Show the authenticated Disk user.")
     whoami.add_argument("--json", action="store_true", help="Print the raw API payload.")
     subparsers.add_parser("logout", help="Clear the stored login token.")
+    subparsers.add_parser("pwd", help="Print the current remote directory.")
+
+    cd_cmd = subparsers.add_parser("cd", help="Change the current remote directory.")
+    cd_cmd.add_argument(
+        "remote_path",
+        nargs="?",
+        default="/",
+        help="Remote path, @<res_str_id>, or id:<res_str_id>.",
+    )
 
     ls_cmd = subparsers.add_parser("ls", help="List a remote Disk directory.")
     ls_cmd.add_argument(
         "remote_path",
         nargs="?",
-        default="/",
+        default=".",
         help="Remote path, @<res_str_id>, or id:<res_str_id>.",
     )
     ls_cmd.add_argument("--json", action="store_true", help="Print the raw API payload.")
@@ -160,7 +215,7 @@ def build_parser() -> argparse.ArgumentParser:
     upload.add_argument(
         "remote_path",
         nargs="?",
-        default="/",
+        default=".",
         help="Target remote directory path, @<res_str_id>, or id:<res_str_id>.",
     )
     upload.add_argument(
@@ -183,7 +238,7 @@ def build_parser() -> argparse.ArgumentParser:
     mkdir.add_argument(
         "parent",
         nargs="?",
-        default="/",
+        default=".",
         help="Parent remote directory path, @<res_str_id>, or id:<res_str_id>.",
     )
 
@@ -219,7 +274,7 @@ def build_parser() -> argparse.ArgumentParser:
     link.add_argument(
         "parent",
         nargs="?",
-        default="/",
+        default=".",
         help="Parent remote directory path, @<res_str_id>, or id:<res_str_id>.",
     )
 
@@ -378,13 +433,26 @@ def resolve_remote_reference(ctx: CommandContext, reference: str) -> Dict[str, A
     if resource_id:
         return ctx.client.get_resource(resource_id)
 
-    current_id = ctx.root_res_id()
+    reference = reference.strip()
+    root_id = ctx.root_res_id()
+    current_id = root_id if reference.startswith("/") else ctx.current_dir_res_id()
     normalized = reference.strip("/")
-    if not normalized:
+    if reference in {"", ".", "/"} or not normalized:
         return ctx.client.get_resource(current_id)
 
     current_resource = ctx.client.get_resource(current_id)
     for segment in [part for part in normalized.split("/") if part]:
+        if segment == ".":
+            continue
+        if segment == "..":
+            current_res_id = current_resource["info"]["res_str_id"]
+            if current_res_id == root_id:
+                continue
+            parent_id = current_resource["info"].get("parent_str_id")
+            if not parent_id:
+                continue
+            current_resource = ctx.client.get_resource(parent_id)
+            continue
         ensure_folder_resource(current_resource, label=format_remote_path(reference))
         selector = ctx.client.get_selector(current_resource["info"]["res_str_id"])
         child = next(
@@ -673,6 +741,8 @@ def handle_login(ctx: CommandContext, args: argparse.Namespace) -> int:
     with console.status("[bold cyan]Exchanging authorization code[/bold cyan]", spinner="dots"):
         oauth_body = ctx.client.exchange_code(code)
         ctx.settings.user = oauth_body.get("user") or ctx.client.get_current_user()
+        ctx.settings.cwd_res_id = ctx.settings.user.get("root_res")
+        ctx.settings.cwd_path = "/"
     ctx.settings.save()
     user = ctx.settings.user or {}
     print_success(
@@ -730,6 +800,25 @@ def handle_logout(ctx: CommandContext, _: argparse.Namespace) -> int:
     ctx.settings.clear_auth()
     ctx.settings.save()
     print_success("stored credentials cleared")
+    return 0
+
+
+def handle_pwd(ctx: CommandContext, _: argparse.Namespace) -> int:
+    with console.status("[bold cyan]Resolving current directory[/bold cyan]", spinner="dots"):
+        resource = resolve_remote_reference(ctx, ".")
+        current_path = ctx.set_current_dir(resource)
+    console.print(current_path)
+    return 0
+
+
+def handle_cd(ctx: CommandContext, args: argparse.Namespace) -> int:
+    with console.status("[bold cyan]Changing remote directory[/bold cyan]", spinner="dots"):
+        resource = resolve_remote_reference(ctx, args.remote_path)
+        ensure_folder_resource(resource, label=args.remote_path)
+        current_path = ctx.set_current_dir(resource)
+    print_success(
+        f"current directory: {current_path} ({format_resource_ref(resource['info']['res_str_id'])})"
+    )
     return 0
 
 
@@ -884,6 +973,8 @@ def dispatch(args: argparse.Namespace) -> int:
         "login": handle_login,
         "whoami": handle_whoami,
         "logout": handle_logout,
+        "pwd": handle_pwd,
+        "cd": handle_cd,
         "ls": handle_ls,
         "upload": handle_upload,
         "mkdir": handle_mkdir,

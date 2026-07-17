@@ -30,6 +30,8 @@ class DiskSettings:
     qt_command: str = field(default_factory=lambda: os.getenv("DISK_QT_COMMAND", DEFAULT_QT_COMMAND))
     token: Optional[str] = None
     user: Optional[Dict[str, Any]] = None
+    cwd_res_id: Optional[str] = None
+    cwd_path: str = "/"
     state_path: Path = DEFAULT_STATE_PATH
     upload_record_dir: Path = field(
         default_factory=lambda: Path(
@@ -85,6 +87,8 @@ class DiskSettings:
             qt_command=data.get("qt_command", os.getenv("DISK_QT_COMMAND", DEFAULT_QT_COMMAND)),
             token=data.get("token"),
             user=data.get("user"),
+            cwd_res_id=data.get("cwd_res_id"),
+            cwd_path=data.get("cwd_path") or "/",
             state_path=preferred_path if loaded_from_legacy_path else source_path,
             upload_record_dir=Path(
                 data.get(
@@ -114,6 +118,8 @@ class DiskSettings:
     def clear_auth(self) -> None:
         self.token = None
         self.user = None
+        self.cwd_res_id = None
+        self.cwd_path = "/"
 
     def oauth_authorize_url(self, *, state: Optional[str] = "htx-cli") -> str:
         params = {"app_id": self.sso_app_id}
