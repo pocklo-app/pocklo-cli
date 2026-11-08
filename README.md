@@ -3,16 +3,16 @@
 `pocklo` is the command-line client for the Pocklo file workspace. It supports:
 
 - SSO-based login by exchanging an authorization `code` for the backend JWT token
-- Listing remote Disk directories
+- Listing remote directories
 - Switching into a remote working directory with `cd`
-- Uploading a local file into a remote Disk directory
+- Uploading a local file into a remote directory
 - Uploading a local directory recursively while recreating its folder structure remotely
 - Resumable multipart uploads with real remote-part progress
 
 ## Install
 
 ```bash
-python3 -m pip install git+https://github.com/pocklo-app/pocklo-cli.git
+python3 -m pip install pocklo
 ```
 
 For local development:
