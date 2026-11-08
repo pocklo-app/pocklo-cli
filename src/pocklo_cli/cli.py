@@ -29,8 +29,8 @@ from rich.table import Table
 from rich.text import Text
 
 from . import __version__
-from .api import DiskAPIError, DiskClient
-from .config import DEFAULT_STATE_PATH, DiskSettings
+from .api import PockloAPIError, PockloClient
+from .config import DEFAULT_STATE_PATH, PockloSettings
 
 RTYPE_FILE = 0
 RTYPE_FOLDER = 1
@@ -70,12 +70,12 @@ class CLIUsageError(RuntimeError):
 
 @dataclass
 class CommandContext:
-    settings: DiskSettings
-    client: DiskClient
+    settings: PockloSettings
+    client: PockloClient
 
     def require_login(self) -> None:
         if not self.settings.token:
-            raise CLIUsageError("Please run `htx login` first.")
+            raise CLIUsageError("Please run `pocklo login` first.")
 
     def sync_user(self) -> Dict[str, Any]:
         self.require_login()
@@ -157,16 +157,15 @@ class UploadFilters:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="htx",
-        description="Command-line client for the Disk backend API.",
+        prog="pocklo",
+        description="Command-line client for the Pocklo backend API.",
     )
     parser.add_argument(
         "--config",
         type=Path,
-        default=DEFAULT_STATE_PATH,
         help=f"State file path (default: {DEFAULT_STATE_PATH})",
     )
-    parser.add_argument("--version", action="version", version=f"htx-cli {__version__}")
+    parser.add_argument("--version", action="version", version=f"pocklo-cli {__version__}")
 
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -188,7 +187,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Force the browser-based web OAuth flow instead of using `qt app oauth`.",
     )
 
-    whoami = subparsers.add_parser("whoami", help="Show the authenticated Disk user.")
+    whoami = subparsers.add_parser("whoami", help="Show the authenticated Pocklo user.")
     whoami.add_argument("--json", action="store_true", help="Print the raw API payload.")
     subparsers.add_parser("logout", help="Clear the stored login token.")
     subparsers.add_parser("pwd", help="Print the current remote directory.")
@@ -201,7 +200,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Remote path, @<res_str_id>, or id:<res_str_id>.",
     )
 
-    ls_cmd = subparsers.add_parser("ls", help="List a remote Disk directory.")
+    ls_cmd = subparsers.add_parser("ls", help="List a remote Pocklo directory.")
     ls_cmd.add_argument(
         "remote_path",
         nargs="?",
@@ -761,7 +760,7 @@ def request_qt_oauth_code(ctx: CommandContext, qt_command: str) -> Optional[str]
                 "--app-id",
                 ctx.settings.sso_app_id,
                 "--client-name",
-                "htx-cli",
+                "pocklo-cli",
             ],
             check=True,
             capture_output=True,
@@ -782,7 +781,7 @@ def request_qt_oauth_code(ctx: CommandContext, qt_command: str) -> Optional[str]
         print_note("`qt app oauth` returned an empty authorization code, falling back to browser login.")
         return None
 
-    print_note("received OAuth code from `qt app oauth`; exchanging directly with Disk backend")
+    print_note("received OAuth code from `qt app oauth`; exchanging directly with Pocklo backend")
     return code
 
 
@@ -876,7 +875,7 @@ def handle_rm(ctx: CommandContext, args: argparse.Namespace) -> int:
         resource = resolve_remote_reference(ctx, args.remote_path)
     info = resource["info"]
     if info["rtype"] == RTYPE_FOLDER and resource.get("child_list") and not args.recursive:
-        raise CLIUsageError("Directory is not empty. Re-run with `htx rm --recursive`.")
+        raise CLIUsageError("Directory is not empty. Re-run with `pocklo rm --recursive`.")
 
     if info["rtype"] == RTYPE_FOLDER and args.recursive:
         delete_resource_recursive(ctx, resource)
@@ -965,8 +964,8 @@ def handle_link(ctx: CommandContext, args: argparse.Namespace) -> int:
 
 
 def dispatch(args: argparse.Namespace) -> int:
-    settings = DiskSettings.load(args.config)
-    client = DiskClient(settings)
+    settings = PockloSettings.load(args.config)
+    client = PockloClient(settings)
     ctx = CommandContext(settings=settings, client=client)
 
     handlers = {
@@ -995,7 +994,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     except CLIUsageError as exc:
         error_console.print(f"[bold red]ERROR[/bold red] {exc}")
         return 2
-    except DiskAPIError as exc:
+    except PockloAPIError as exc:
         error_console.print(f"[bold red]API[/bold red] {exc}")
         if exc.debug_msg:
             print_warning(f"debug: {exc.debug_msg}")

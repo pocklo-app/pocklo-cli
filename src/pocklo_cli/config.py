@@ -5,15 +5,18 @@ import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from shutil import which
+from tempfile import NamedTemporaryFile
 from typing import Any, Dict, Optional
 from urllib.parse import urlencode
 
 DEFAULT_APP_ID = "R41nXZEw"
 DEFAULT_BACKEND_URL = "https://disk.6-79.cn"
 DEFAULT_SSO_URL = "https://qt.6-79.cn/oauth/"
-DEFAULT_STATE_PATH = Path.home() / ".config" / "htx-cli" / "state.json"
-DEFAULT_UPLOAD_RECORD_DIR = Path.home() / ".config" / "htx-cli" / "upload-records"
-LEGACY_STATE_PATH = Path.home() / ".config" / "disk-cli" / "state.json"
+DEFAULT_STATE_PATH = Path.home() / ".config" / "pocklo-cli" / "state.json"
+DEFAULT_UPLOAD_RECORD_DIR = DEFAULT_STATE_PATH.with_name("upload-records")
+LEGACY_STATE_PATHS = tuple(
+    Path.home() / ".config" / name / "state.json" for name in ("htx-cli", "disk-cli")
+)
 LEGACY_APP_IDS = {"R41nXZEwpfl6tw6KYyoEZ4FYST4BXPlF"}
 LEGACY_SSO_URLS = {
     "https://sso.6-79.cn/oauth",
@@ -22,12 +25,16 @@ LEGACY_SSO_URLS = {
 DEFAULT_QT_COMMAND = "qt"
 
 
+def env_setting(name: str, default: str) -> str:
+    return os.getenv(f"POCKLO_{name}", os.getenv(f"DISK_{name}", default))
+
+
 @dataclass
-class DiskSettings:
-    backend_url: str = field(default_factory=lambda: os.getenv("DISK_BACKEND_URL", DEFAULT_BACKEND_URL))
-    sso_url: str = field(default_factory=lambda: os.getenv("DISK_SSO_URL", DEFAULT_SSO_URL))
-    sso_app_id: str = field(default_factory=lambda: os.getenv("DISK_SSO_APP_ID", DEFAULT_APP_ID))
-    qt_command: str = field(default_factory=lambda: os.getenv("DISK_QT_COMMAND", DEFAULT_QT_COMMAND))
+class PockloSettings:
+    backend_url: str = field(default_factory=lambda: env_setting("BACKEND_URL", DEFAULT_BACKEND_URL))
+    sso_url: str = field(default_factory=lambda: env_setting("SSO_URL", DEFAULT_SSO_URL))
+    sso_app_id: str = field(default_factory=lambda: env_setting("SSO_APP_ID", DEFAULT_APP_ID))
+    qt_command: str = field(default_factory=lambda: env_setting("QT_COMMAND", DEFAULT_QT_COMMAND))
     token: Optional[str] = None
     user: Optional[Dict[str, Any]] = None
     cwd_res_id: Optional[str] = None
@@ -35,17 +42,17 @@ class DiskSettings:
     state_path: Path = DEFAULT_STATE_PATH
     upload_record_dir: Path = field(
         default_factory=lambda: Path(
-            os.getenv("DISK_UPLOAD_RECORD_DIR", str(DEFAULT_UPLOAD_RECORD_DIR))
+            env_setting("UPLOAD_RECORD_DIR", str(DEFAULT_UPLOAD_RECORD_DIR))
         ).expanduser()
     )
 
     @staticmethod
     def _default_sso_url() -> str:
-        return os.getenv("DISK_SSO_URL", DEFAULT_SSO_URL)
+        return env_setting("SSO_URL", DEFAULT_SSO_URL)
 
     @staticmethod
     def _default_sso_app_id() -> str:
-        return os.getenv("DISK_SSO_APP_ID", DEFAULT_APP_ID)
+        return env_setting("SSO_APP_ID", DEFAULT_APP_ID)
 
     @classmethod
     def _normalize_oauth_settings(
@@ -65,13 +72,13 @@ class DiskSettings:
         return normalized_sso_url, normalized_sso_app_id
 
     @classmethod
-    def load(cls, state_path: Optional[Path] = None) -> "DiskSettings":
+    def load(cls, state_path: Optional[Path] = None) -> "PockloSettings":
         preferred_path = (state_path or DEFAULT_STATE_PATH).expanduser()
         source_path = preferred_path
         loaded_from_legacy_path = False
-        if state_path is None and not preferred_path.exists() and LEGACY_STATE_PATH.exists():
-            source_path = LEGACY_STATE_PATH
-            loaded_from_legacy_path = True
+        if state_path is None and not preferred_path.exists():
+            source_path = next((path for path in LEGACY_STATE_PATHS if path.exists()), preferred_path)
+            loaded_from_legacy_path = source_path != preferred_path
         if not source_path.exists():
             return cls(state_path=preferred_path)
 
@@ -80,11 +87,12 @@ class DiskSettings:
             sso_url=data.get("sso_url"),
             sso_app_id=data.get("sso_app_id"),
         )
+        default_records = source_path.with_name("upload-records") if loaded_from_legacy_path else DEFAULT_UPLOAD_RECORD_DIR
         settings = cls(
-            backend_url=data.get("backend_url", os.getenv("DISK_BACKEND_URL", DEFAULT_BACKEND_URL)),
+            backend_url=data.get("backend_url", env_setting("BACKEND_URL", DEFAULT_BACKEND_URL)),
             sso_url=normalized_sso_url,
             sso_app_id=normalized_sso_app_id,
-            qt_command=data.get("qt_command", os.getenv("DISK_QT_COMMAND", DEFAULT_QT_COMMAND)),
+            qt_command=data.get("qt_command", env_setting("QT_COMMAND", DEFAULT_QT_COMMAND)),
             token=data.get("token"),
             user=data.get("user"),
             cwd_res_id=data.get("cwd_res_id"),
@@ -93,7 +101,7 @@ class DiskSettings:
             upload_record_dir=Path(
                 data.get(
                     "upload_record_dir",
-                    os.getenv("DISK_UPLOAD_RECORD_DIR", str(DEFAULT_UPLOAD_RECORD_DIR)),
+                    env_setting("UPLOAD_RECORD_DIR", str(default_records)),
                 )
             ).expanduser(),
         )
@@ -110,10 +118,15 @@ class DiskSettings:
         payload = asdict(self)
         payload["state_path"] = str(self.state_path)
         payload["upload_record_dir"] = str(self.upload_record_dir)
-        self.state_path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
+        with NamedTemporaryFile(mode="w", encoding="utf-8", dir=self.state_path.parent, delete=False) as stream:
+            temp_path = Path(stream.name)
+            try:
+                json.dump(payload, stream, ensure_ascii=False, indent=2)
+                stream.write("\n")
+                stream.close()
+                temp_path.replace(self.state_path)
+            finally:
+                temp_path.unlink(missing_ok=True)
 
     def clear_auth(self) -> None:
         self.token = None
@@ -121,7 +134,7 @@ class DiskSettings:
         self.cwd_res_id = None
         self.cwd_path = "/"
 
-    def oauth_authorize_url(self, *, state: Optional[str] = "htx-cli") -> str:
+    def oauth_authorize_url(self, *, state: Optional[str] = "pocklo-cli") -> str:
         params = {"app_id": self.sso_app_id}
         if state:
             params["state"] = state

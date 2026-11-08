@@ -3,9 +3,9 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "htx-cli"
-version = "0.1.7"
-description = "htx-cli command-line client for the Disk backend API"
+name = "pocklo-cli"
+version = "0.2.0"
+description = "Command-line client for the Pocklo file workspace"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
@@ -15,7 +15,7 @@ dependencies = [
 ]
 
 [project.scripts]
-htx = "disk_cli.cli:main"
+pocklo = "pocklo_cli.cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

@@ -10,10 +10,10 @@ import requests
 from qiniu import Auth
 from qiniu.services.storage.uploader import ResumeUploaderV2, UploadProgressRecorder
 
-from .config import DiskSettings
+from .config import PockloSettings
 
 
-class DiskAPIError(RuntimeError):
+class PockloAPIError(RuntimeError):
     def __init__(
         self,
         message: str,
@@ -40,8 +40,8 @@ MAX_RETRIES = 5
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 
 
-class DiskClient:
-    def __init__(self, settings: DiskSettings, *, timeout: float = 30.0) -> None:
+class PockloClient:
+    def __init__(self, settings: PockloSettings, *, timeout: float = 30.0) -> None:
         self.settings = settings
         self.timeout = timeout
         self.session = requests.Session()
@@ -56,7 +56,7 @@ class DiskClient:
         try:
             payload = response.json()
         except ValueError as exc:
-            raise DiskAPIError(
+            raise PockloAPIError(
                 f"Server returned a non-JSON response (HTTP {response.status_code})."
             ) from exc
 
@@ -68,8 +68,8 @@ class DiskClient:
             return payload
 
         if payload.get("code") != 0:
-            raise DiskAPIError(
-                payload.get("msg") or "The Disk API request failed.",
+            raise PockloAPIError(
+                payload.get("msg") or "The Pocklo API request failed.",
                 status_code=status_code,
                 identifier=payload.get("identifier"),
                 debug_msg=payload.get("debug_msg"),
@@ -82,7 +82,7 @@ class DiskClient:
         return min(0.5 * (2 ** (attempt - 1)), 4.0)
 
     @staticmethod
-    def _should_retry_api_error(error: DiskAPIError) -> bool:
+    def _should_retry_api_error(error: PockloAPIError) -> bool:
         return error.status_code in RETRYABLE_STATUS_CODES
 
     def _request_once(
@@ -133,21 +133,21 @@ class DiskClient:
                     files=files,
                     include_auth=include_auth,
                 )
-            except DiskAPIError as exc:
+            except PockloAPIError as exc:
                 last_error = exc
                 if attempt >= MAX_RETRIES or not self._should_retry_api_error(exc):
                     raise
             except requests.RequestException as exc:
                 last_error = exc
                 if attempt >= MAX_RETRIES:
-                    raise DiskAPIError(
+                    raise PockloAPIError(
                         f"Request failed after {MAX_RETRIES} attempts: {exc}"
                     ) from exc
             time.sleep(self._retry_delay(attempt))
 
-        if isinstance(last_error, DiskAPIError):
+        if isinstance(last_error, PockloAPIError):
             raise last_error
-        raise DiskAPIError(f"Request failed after {MAX_RETRIES} attempts.")
+        raise PockloAPIError(f"Request failed after {MAX_RETRIES} attempts.")
 
     def exchange_code(self, code: str) -> Dict[str, Any]:
         body = self.request(
@@ -157,33 +157,33 @@ class DiskClient:
             include_auth=False,
         )
         if not isinstance(body, dict) or "token" not in body:
-            raise DiskAPIError("OAuth callback did not return a login token.")
+            raise PockloAPIError("OAuth callback did not return a login token.")
         self.settings.token = body["token"]
         return body
 
     def get_current_user(self) -> Dict[str, Any]:
         body = self.request("GET", "/api/user/")
         if not isinstance(body, dict):
-            raise DiskAPIError("User endpoint returned an unexpected payload.")
+            raise PockloAPIError("User endpoint returned an unexpected payload.")
         return body
 
     def get_resource(self, res_str_id: str, visit_key: Optional[str] = None) -> Dict[str, Any]:
         params = {"visit_key": visit_key} if visit_key else None
         body = self.request("GET", f"/api/res/{res_str_id}", params=params)
         if not isinstance(body, dict):
-            raise DiskAPIError("Resource endpoint returned an unexpected payload.")
+            raise PockloAPIError("Resource endpoint returned an unexpected payload.")
         return body
 
     def get_selector(self, res_str_id: str) -> Dict[str, Any]:
         body = self.request("GET", f"/api/res/{res_str_id}/selector")
         if not isinstance(body, dict):
-            raise DiskAPIError("Selector endpoint returned an unexpected payload.")
+            raise PockloAPIError("Selector endpoint returned an unexpected payload.")
         return body
 
     def get_path(self, res_str_id: str) -> list[str]:
         body = self.request("GET", f"/api/res/{res_str_id}/path")
         if not isinstance(body, list):
-            raise DiskAPIError("Path endpoint returned an unexpected payload.")
+            raise PockloAPIError("Path endpoint returned an unexpected payload.")
         return [str(item) for item in body]
 
     def create_folder(self, parent_id: str, folder_name: str) -> Dict[str, Any]:
@@ -193,7 +193,7 @@ class DiskClient:
             json={"folder_name": folder_name},
         )
         if not isinstance(body, dict):
-            raise DiskAPIError("Create-folder endpoint returned an unexpected payload.")
+            raise PockloAPIError("Create-folder endpoint returned an unexpected payload.")
         return body
 
     def create_link(self, parent_id: str, link_name: str, link: str) -> Dict[str, Any]:
@@ -203,7 +203,7 @@ class DiskClient:
             json={"link_name": link_name, "link": link},
         )
         if not isinstance(body, dict):
-            raise DiskAPIError("Create-link endpoint returned an unexpected payload.")
+            raise PockloAPIError("Create-link endpoint returned an unexpected payload.")
         return body
 
     def update_resource(
@@ -230,7 +230,7 @@ class DiskClient:
             },
         )
         if not isinstance(body, dict):
-            raise DiskAPIError("Update-resource endpoint returned an unexpected payload.")
+            raise PockloAPIError("Update-resource endpoint returned an unexpected payload.")
         return body
 
     def delete_resource(self, res_str_id: str) -> None:
@@ -280,14 +280,14 @@ class DiskClient:
                 try:
                     response.raise_for_status()
                 except requests.HTTPError as exc:
-                    raise DiskAPIError(
+                    raise PockloAPIError(
                         f"Download failed with HTTP {response.status_code}.",
                         status_code=response.status_code,
                     ) from exc
 
                 if self._is_backend_json_api_response(response, requested_url=url):
                     self._unwrap_response(response)
-                    raise DiskAPIError(
+                    raise PockloAPIError(
                         "Download endpoint returned JSON metadata instead of file content."
                     )
 
@@ -306,14 +306,14 @@ class DiskClient:
                             if progress_callback:
                                 progress_callback(transferred, total)
                 return response.url
-            except DiskAPIError as exc:
+            except PockloAPIError as exc:
                 last_error = exc
                 if attempt >= MAX_RETRIES or not self._should_retry_api_error(exc):
                     raise
             except requests.RequestException as exc:
                 last_error = exc
                 if attempt >= MAX_RETRIES:
-                    raise DiskAPIError(
+                    raise PockloAPIError(
                         f"Download failed after {MAX_RETRIES} attempts: {exc}"
                     ) from exc
             finally:
@@ -321,9 +321,9 @@ class DiskClient:
                     response.close()
             time.sleep(self._retry_delay(attempt))
 
-        if isinstance(last_error, DiskAPIError):
+        if isinstance(last_error, PockloAPIError):
             raise last_error
-        raise DiskAPIError(f"Download failed after {MAX_RETRIES} attempts.")
+        raise PockloAPIError(f"Download failed after {MAX_RETRIES} attempts.")
 
     def get_upload_token(self, parent_id: str, filename: str) -> UploadToken:
         body = self.request(
@@ -332,7 +332,7 @@ class DiskClient:
             params={"filename": filename},
         )
         if not isinstance(body, dict):
-            raise DiskAPIError("Upload-token endpoint returned an unexpected payload.")
+            raise PockloAPIError("Upload-token endpoint returned an unexpected payload.")
         return UploadToken(key=body["key"], upload_token=body["upload_token"])
 
     def upload_file(
@@ -347,7 +347,7 @@ class DiskClient:
         file_size = local_path.stat().st_size
         bucket_name = Auth.get_bucket_name(upload.upload_token)
         if not bucket_name:
-            raise DiskAPIError("Upload token does not contain a valid bucket name.")
+            raise PockloAPIError("Upload token does not contain a valid bucket name.")
 
         for attempt in range(1, MAX_RETRIES + 1):
             try:
@@ -367,7 +367,7 @@ class DiskClient:
                     file_name=local_path.name,
                 )
                 if resp is not None and not resp.ok():
-                    raise DiskAPIError(
+                    raise PockloAPIError(
                         f"Failed to initialize multipart upload: {resp.error}",
                         status_code=resp.status_code,
                         debug_msg=resp.text_body,
@@ -383,7 +383,7 @@ class DiskClient:
                         file_name=local_path.name,
                     )
                 if resp is not None and not resp.ok():
-                    raise DiskAPIError(
+                    raise PockloAPIError(
                         f"Failed while uploading file parts: {resp.error}",
                         status_code=resp.status_code,
                         debug_msg=resp.text_body,
@@ -400,27 +400,27 @@ class DiskClient:
                     file_name=local_path.name,
                 )
                 if resp is not None and not resp.ok():
-                    raise DiskAPIError(
+                    raise PockloAPIError(
                         f"Failed to finalize multipart upload: {resp.error}",
                         status_code=resp.status_code,
                         debug_msg=resp.text_body,
                     )
                 body = self._unwrap_payload(body, status_code=resp.status_code if resp is not None else None)
                 if not isinstance(body, dict):
-                    raise DiskAPIError("Upload endpoint returned an unexpected payload.")
+                    raise PockloAPIError("Upload endpoint returned an unexpected payload.")
                 return body
-            except DiskAPIError as exc:
+            except PockloAPIError as exc:
                 last_error = exc
                 if attempt >= MAX_RETRIES or not self._should_retry_api_error(exc):
                     raise
             except requests.RequestException as exc:
                 last_error = exc
                 if attempt >= MAX_RETRIES:
-                    raise DiskAPIError(
+                    raise PockloAPIError(
                         f"Upload failed after {MAX_RETRIES} attempts: {exc}"
                     ) from exc
             time.sleep(self._retry_delay(attempt))
 
-        if isinstance(last_error, DiskAPIError):
+        if isinstance(last_error, PockloAPIError):
             raise last_error
-        raise DiskAPIError(f"Upload failed after {MAX_RETRIES} attempts.")
+        raise PockloAPIError(f"Upload failed after {MAX_RETRIES} attempts.")

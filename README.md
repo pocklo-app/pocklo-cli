@@ -1,6 +1,6 @@
-# htx-cli
+# Pocklo CLI · 小兜
 
-`htx-cli` is a command-line client for the Disk backend API. It supports:
+`pocklo` is the command-line client for the Pocklo file workspace. It supports:
 
 - SSO-based login by exchanging an authorization `code` for the backend JWT token
 - Listing remote Disk directories
@@ -12,7 +12,7 @@
 ## Install
 
 ```bash
-pip install htx-cli
+python3 -m pip install git+https://github.com/pocklo-app/pocklo-cli.git
 ```
 
 For local development:
@@ -26,93 +26,93 @@ pip install -e .
 Print the SSO authorization URL:
 
 ```bash
-htx login --print-url
+pocklo login --print-url
 ```
 
 Interactive login:
 
 ```bash
-htx login
+pocklo login
 ```
 
 You can also paste the full callback URL directly:
 
 ```bash
-htx login --code 'https://d.6-79.cn/oauth/qtb/callback?code=...'
+pocklo login --code 'https://pocklo.jyonn.space/oauth/qtb/callback?code=...'
 ```
 
 Show the authenticated user:
 
 ```bash
-htx whoami
+pocklo whoami
 ```
 
 Change into a remote directory:
 
 ```bash
-htx cd @Ab12Cd
-htx cd Projects
-htx cd ../Archive
+pocklo cd @Ab12Cd
+pocklo cd Projects
+pocklo cd ../Archive
 ```
 
 Print the current remote directory:
 
 ```bash
-htx pwd
+pocklo pwd
 ```
 
 List the current remote directory:
 
 ```bash
-htx ls
+pocklo ls
 ```
 
 List the remote root directory explicitly:
 
 ```bash
-htx ls /
+pocklo ls /
 ```
 
 List a nested remote directory by relative path:
 
 ```bash
-htx ls Photos/2024
+pocklo ls Photos/2024
 ```
 
 List a remote resource directly by resource ID:
 
 ```bash
-htx ls id:Ab12Cd
+pocklo ls id:Ab12Cd
 ```
 
 The shorter `@资源ID` form works too:
 
 ```bash
-htx ls @Ab12Cd
+pocklo ls @Ab12Cd
 ```
 
 Upload a local file into a remote directory:
 
 ```bash
-htx upload ./report.pdf
+pocklo upload ./report.pdf
 ```
 
 Upload a local directory recursively. The local directory name is created or reused under the target remote directory:
 
 ```bash
-htx upload ./albums
+pocklo upload ./albums
 ```
 
 Only upload selected extensions:
 
 ```bash
-htx upload ./albums /Photos --include-ext jpg --include-ext png
+pocklo upload ./albums /Photos --include-ext jpg --include-ext png
 ```
 
 Exclude specific extensions:
 
 ```bash
-htx upload ./albums /Photos --exclude-ext tmp --exclude-ext log
+pocklo upload ./albums /Photos --exclude-ext tmp --exclude-ext log
 ```
 
 You can combine both flags. `--exclude-ext` takes precedence when both match the same file.
@@ -120,64 +120,64 @@ You can combine both flags. `--exclude-ext` takes precedence when both match the
 Create a directory under the remote root:
 
 ```bash
-htx mkdir Projects
-htx cd Projects
-htx mkdir 2026
+pocklo mkdir Projects
+pocklo cd Projects
+pocklo mkdir 2026
 ```
 
 Create a directory under a specific remote folder:
 
 ```bash
-htx mkdir 2026 /Photos
-htx mkdir Archive @Ab12Cd
+pocklo mkdir 2026 /Photos
+pocklo mkdir Archive @Ab12Cd
 ```
 
 Rename a remote resource:
 
 ```bash
-htx rename /Photos/old-name.jpg new-name.jpg
+pocklo rename /Photos/old-name.jpg new-name.jpg
 ```
 
 Move a remote resource into another remote directory:
 
 ```bash
-htx mv new-name.jpg ../Archive
+pocklo mv new-name.jpg ../Archive
 ```
 
 Delete a remote file:
 
 ```bash
-htx rm new-name.jpg
+pocklo rm new-name.jpg
 ```
 
 Delete a non-empty remote directory recursively:
 
 ```bash
-htx rm --recursive Archive
+pocklo rm --recursive Archive
 ```
 
 Download a remote file to the current directory:
 
 ```bash
-htx download report.pdf
+pocklo download report.pdf
 ```
 
 Download a remote file into a chosen local path:
 
 ```bash
-htx download @Ab12Cd ./downloads/report.pdf
+pocklo download @Ab12Cd ./downloads/report.pdf
 ```
 
 Download a remote directory recursively:
 
 ```bash
-htx download @Ab12Cd ./downloads/Archive
+pocklo download @Ab12Cd ./downloads/Archive
 ```
 
 Create a remote link resource:
 
 ```bash
-htx link Search https://www.google.com
+pocklo link Search https://www.google.com
 ```
 
 ## State File
@@ -185,13 +185,13 @@ htx link Search https://www.google.com
 The CLI stores the backend JWT token and the last fetched user payload in:
 
 ```text
-~/.config/htx-cli/state.json
+~/.config/pocklo-cli/state.json
 ```
 
-Use `--config` to point to a different state file.
+On first use, Pocklo imports existing login state and the remote working directory from `~/.config/htx-cli` or `~/.config/disk-cli` when present. Existing upload resume records remain in their configured directory. `DISK_*` environment variables are still read as fallbacks. Use `--config` to point to a different state file.
 
 Multipart upload resume records are stored under:
 
 ```text
-~/.config/htx-cli/upload-records/
+~/.config/pocklo-cli/upload-records/
 ```
